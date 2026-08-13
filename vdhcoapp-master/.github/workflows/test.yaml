@@ -1,0 +1,23 @@
+name: Tests
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+    - run: npm install -g eslint
+    - run: eslint app tests/*.mjs
+    - run: sudo snap install yq
+    - run: ./build.sh
+    - run: sudo dpkg -i ./dist/linux/x86_64/vdhcoapp-linux-x86_64.deb
+    - run: ./tests/test.mjs /opt/vdhcoapp/vdhcoapp --with-network
+    - run: sudo dpkg -r net.downloadhelper.coapp
+    - run: sudo apt-get update
+    - run: sudo apt-get install ffmpeg
+    - run: sudo dpkg -i ./dist/linux/x86_64/vdhcoapp-noffmpeg-linux-x86_64.deb
+    - run: ./tests/test.mjs /opt/vdhcoapp/vdhcoapp --skip-codecs-tests
+    - run: sudo dpkg -r net.downloadhelper.coapp.noffmpeg

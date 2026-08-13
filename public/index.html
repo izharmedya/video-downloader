@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="tr" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video İndirici</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ══ GİRİŞ EKRANI ═══════════════════════════════════ -->
+<div class="login-overlay hidden" id="login-overlay">
+  <div class="login-card">
+    <div class="login-logo">🎬</div>
+    <h2 class="login-title">Video İndirici</h2>
+    <p class="login-sub">Devam etmek için şifreyi girin</p>
+    <input type="password" id="login-password" placeholder="Şifre" autocomplete="current-password" />
+    <button id="btn-login" class="btn-add-queue" onclick="login()">Giriş Yap</button>
+    <p class="login-error hidden" id="login-error">Yanlış şifre</p>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- ══ SIDEBAR ══════════════════════════════════════ -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">🎬</div>
+
+    <div class="sidebar-tabs">
+      <button class="sidebar-tab" id="tab-indir" onclick="switchTab('indir')">
+        <span class="sidebar-tab-icon">⬇</span>
+        <span class="sidebar-tab-label">İndir</span>
+      </button>
+      <button class="sidebar-tab" id="tab-thumbnail" onclick="switchTab('thumbnail')">
+        <span class="sidebar-tab-icon">🖼</span>
+        <span class="sidebar-tab-label">Kapak</span>
+      </button>
+      <button class="sidebar-tab" id="tab-kuyruk" onclick="switchTab('kuyruk')">
+        <span class="sidebar-tab-icon">📋</span>
+        <span class="sidebar-tab-label">Kuyruk</span>
+        <span class="sidebar-badge hidden" id="badge-kuyruk">0</span>
+      </button>
+      <button class="sidebar-tab" id="tab-gecmis" onclick="switchTab('gecmis')">
+        <span class="sidebar-tab-icon">📊</span>
+        <span class="sidebar-tab-label">Geçmiş</span>
+      </button>
+    </div>
+
+    <div class="sidebar-bottom">
+      <button class="btn-logout hidden" id="btn-logout" onclick="logout()" title="Çıkış yap">⎋ Çıkış</button>
+      <button class="theme-btn" id="theme-dark"  onclick="setTheme('dark')"  title="Karanlık">Aa</button>
+      <button class="theme-btn" id="theme-light" onclick="setTheme('light')" title="Aydınlık">☀</button>
+      <button class="theme-btn" id="theme-pink"  onclick="setTheme('pink')"  title="Pembe">✿</button>
+    </div>
+  </nav>
+
+  <!-- ══ MAIN PANEL ════════════════════════════════════ -->
+  <div class="main-panel">
+
+    <!-- ═══ İNDİR SEKMESİ ═══ -->
+    <!-- JS tarafından style.display ile açılıp kapanır -->
+    <section class="tab-content" id="section-indir" style="display:none">
+      <div class="download-zone">
+
+        <!-- URL Girişi -->
+        <p class="download-zone-title">YouTube · TikTok · Instagram · Twitter · SoundCloud</p>
+        <div class="url-input-wrap">
+          <input type="text" id="url-input" placeholder="linki buraya yapıştır" autocomplete="off" />
+          <button id="btn-fetch" class="btn-fetch-inline" onclick="fetchInfo()">İndir</button>
+        </div>
+
+        <!-- Yükleniyor: Akıcı Çözümleme Barı -->
+        <div class="inline-loading" id="card-loading" style="display:none">
+          <div class="fetch-progress-header">
+            <span id="fetch-status-text">Video bilgisi çözümleniyor...</span>
+          </div>
+          <div class="fetch-bar-bg">
+            <div class="fetch-bar-indeterminate" id="fetch-bar"></div>
+          </div>
+        </div>
+
+        <!-- Hata -->
+        <div class="inline-error" id="card-error" style="display:none">
+          <span id="error-msg">❌ Hata</span>
+          <button class="btn-secondary btn-sm" onclick="resetInfo()">Tekrar Dene</button>
+        </div>
+
+        <!-- Video Bilgisi + Seçenekler -->
+        <div class="info-card" id="card-info" style="display:none">
+
+          <!-- Meta -->
+          <div class="info-meta">
+            <img id="thumb" class="media-thumb" src="" alt="" style="display:none" />
+            <div class="media-info-text">
+              <h3 id="info-title"></h3>
+              <p id="info-uploader"></p>
+              <p id="info-platform" style="color:var(--primary);font-weight:700;font-size:.78rem"></p>
+              <span class="badge-playlist hidden" id="badge-playlist"></span>
+            </div>
+          </div>
+
+          <div class="info-body">
+
+            <!-- Playlist -->
+            <div class="hidden" id="row-playlist">
+              <label class="toggle-label">
+                <input type="checkbox" id="chk-playlist" checked />
+                <span>📋 Tüm playlist'i indir</span>
+              </label>
+            </div>
+
+            <!-- Kalite -->
+            <div>
+              <p class="info-label">Kalite</p>
+              <div id="format-list" class="format-list"></div>
+            </div>
+
+            <!-- Trim -->
+            <div>
+              <p class="info-label">✂ Video Kırp <span class="optional">(opsiyonel)</span></p>
+              <div class="trim-row">
+                <div class="trim-field">
+                  <span>Başlangıç</span>
+                  <input type="text" id="trim-start" placeholder="00:01:30" />
+                </div>
+                <div class="trim-sep">→</div>
+                <div class="trim-field">
+                  <span>Bitiş</span>
+                  <input type="text" id="trim-end" placeholder="00:03:00" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Thumbnail -->
+            <label class="toggle-label">
+              <input type="checkbox" id="chk-thumbnail" />
+              <span>🖼 Thumbnail'i de indir (.jpg)</span>
+            </label>
+
+            <!-- Kayıt Klasörü -->
+            <div>
+              <p class="info-label">📁 Kayıt Yeri</p>
+              <div class="input-row">
+                <input type="text" id="save-path" readonly placeholder="Sunucudaki indirme klasörü" />
+                <button type="button" id="btn-open-dir" class="btn-secondary btn-sm" onclick="openDownloadDir()" title="Bu klasörü aç">↗ Aç</button>
+                <button type="button" id="btn-choose-dir" class="btn-secondary btn-sm" onclick="chooseDownloadDir()" title="Klasör seç">📁 Seç</button>
+              </div>
+              <p class="info-note">Dosyalar buraya kaydedilir; "<b>Seç</b>" ile bilgisayarından bir klasör seçebilirsin.</p>
+            </div>
+
+            <!-- Özel Dosya Adı -->
+            <div>
+              <p class="info-label">✏️ Dosya Adı <span class="optional">(opsiyonel)</span></p>
+              <input type="text" id="filename-input" maxlength="180" placeholder="İndirilen dosyanın adı" autocomplete="off" />
+              <p class="info-note">Uzantı otomatik eklenir; boş bırakırsan video başlığı kullanılır.</p>
+            </div>
+
+            <!-- Kuyruğa Ekle -->
+            <button id="btn-add" class="btn-add-queue" onclick="addToQueue()">➕ Kuyruğa Ekle</button>
+
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═══ KAPAK RESMİ (THUMBNAIL) SEKMESİ ═══ -->
+    <section class="tab-content" id="section-thumbnail" style="display:none">
+      <div class="download-zone">
+
+        <p class="download-zone-title">Video Kapak Resmi (Thumbnail) İndirici</p>
+        <div class="url-input-wrap">
+          <input type="text" id="thumb-url-input" placeholder="video linkini buraya yapıştır" autocomplete="off" />
+          <button id="btn-fetch-thumb" class="btn-fetch-inline" onclick="fetchThumbnailInfo()">Kapak Bul</button>
+        </div>
+
+        <!-- Yükleniyor: Akıcı Çözümleme Barı -->
+        <div class="inline-loading" id="card-loading-thumb" style="display:none">
+          <div class="fetch-progress-header">
+            <span id="fetch-status-text-thumb">Kapak resmi çözümleniyor...</span>
+          </div>
+          <div class="fetch-bar-bg">
+            <div class="fetch-bar-indeterminate" id="fetch-bar-thumb"></div>
+          </div>
+        </div>
+
+        <!-- Hata -->
+        <div class="inline-error" id="card-error-thumb" style="display:none">
+          <span id="error-msg-thumb">❌ Hata</span>
+          <button class="btn-secondary btn-sm" onclick="resetThumbnailInfo()">Tekrar Dene</button>
+        </div>
+
+        <!-- Büyük Kapak Önizleme + İndirme Seçenekleri -->
+        <div class="info-card" id="card-thumb-result" style="display:none">
+
+          <!-- Büyük Kapak Görseli -->
+          <div class="thumb-large-wrap">
+            <img id="thumb-large-preview" class="thumb-large-img" src="" alt="Video Kapak Resmi" />
+          </div>
+
+          <div class="info-body">
+            <div class="media-info-text">
+              <h3 id="thumb-info-title"></h3>
+              <p id="thumb-info-uploader"></p>
+              <p id="thumb-info-platform" style="color:var(--primary);font-weight:700;font-size:.78rem"></p>
+            </div>
+
+            <!-- Kalite / Çözünürlük Seçenekleri -->
+            <div>
+              <p class="info-label">Kapak Çözünürlüğü</p>
+              <div id="thumb-format-list" class="format-list"></div>
+            </div>
+
+            <!-- Doğrudan İndir Butonu -->
+            <button id="btn-download-thumb" class="btn-add-queue" onclick="downloadSelectedThumbnail()">
+              🖼 Seçilen Çözünürlükte İndir (.jpg)
+            </button>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═══ KUYRUK SEKMESİ ═══ -->
+    <section class="tab-content" id="section-kuyruk" style="display:none">
+      <div class="section-header">
+        <h3>İndirme Kuyruğu</h3>
+        <button class="btn-danger btn-sm" onclick="clearDone()">✓ Bitti olanları temizle</button>
+      </div>
+      <div id="queue-list">
+        <p class="empty-msg">Kuyruk boş.<br>İndir sekmesinden ekleyin.</p>
+      </div>
+    </section>
+
+    <!-- ═══ GEÇMİŞ SEKMESİ ═══ -->
+    <section class="tab-content" id="section-gecmis" style="display:none">
+      <div class="section-header">
+        <h3>İndirme Geçmişi</h3>
+        <button class="btn-danger btn-sm" onclick="clearHistory()">🗑 Tümünü Temizle</button>
+      </div>
+      <div id="history-list">
+        <p class="empty-msg">Henüz indirme yapılmadı.</p>
+      </div>
+    </section>
+
+  </div><!-- /main-panel -->
+</div><!-- /layout -->
+
+<script>
+  // ── Tema Sistemi ───────────────────────────────────────
+  function setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('vd-theme', t);
+    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('theme-' + t).classList.add('active');
+  }
+  (function() { setTheme(localStorage.getItem('vd-theme') || 'dark'); })();
+</script>
+<script src="app.js"></script>
+</body>
+</html>

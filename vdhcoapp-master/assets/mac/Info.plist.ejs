@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>BuildMachineOSBuild</key>
+    <string>15G31</string>
+    <key>CFBundleDisplayName</key>
+    <string><%= meta.long_name %></string>
+    <key>CFBundleExecutable</key>
+    <string>register.sh</string>
+    <key>CFBundleIconFile</key>
+    <string><%= package.mac.icon_icns %></string>
+    <key>CFBundleIdentifier</key>
+    <string><%= meta.id %></string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string><%= meta.id %></string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string><%= meta.version %></string>
+    <key>CFBundleVersion</key>
+    <string><%= meta.version %></string>
+    <key>DTSDKBuild</key>
+    <string>14D125</string>
+    <key>DTSDKName</key>
+    <string>macosx10.1010.10</string>
+    <key>DTXcode</key>
+    <string>0821</string>
+    <key>DTXcodeBuild</key>
+    <string>8C1002</string>
+    <key>LSApplicationCategoryType</key>
+    <string><%= package.mac.category  %></string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.9.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string><%= "Copyright © " + new Date().getFullYear() + " " + meta.name + " developers." %></string>
+  </dict>
+</plist>

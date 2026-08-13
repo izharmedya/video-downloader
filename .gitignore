@@ -1,0 +1,4 @@
+.DS_Store
+app.log
+downloads/
+node_modules/

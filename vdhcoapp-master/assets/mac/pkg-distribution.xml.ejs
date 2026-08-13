@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<installer-gui-script minSpecVersion="1">
+  <title><%= meta.long_name %></title>
+  <pkg-ref id="<%= meta.id %>"/>
+  <options customize="never" require-scripts="false"/>
+  <choices-outline>
+    <line choice="default">
+      <line choice="<%= meta.id %>"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="<%= meta.id %>" visible="false">
+    <pkg-ref id="<%= meta.id %>"/>
+  </choice>
+  <pkg-ref id="<%= meta.id %>" version="<%= meta.version %>" onConclusion="none">app.pkg</pkg-ref>
+</installer-gui-script>

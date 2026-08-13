@@ -1,0 +1,4 @@
+dist
+private/
+app/node_modules
+.vscode
