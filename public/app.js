@@ -225,6 +225,7 @@ async function addToQueue() {
         download_thumbnail:document.getElementById('chk-thumbnail').checked,
         is_playlist:       videoInfo.is_playlist && document.getElementById('chk-playlist').checked,
         custom_name:       document.getElementById('filename-input').value.trim(),
+        playback_speed:    Number(document.getElementById('playback-speed').value),
       })
     });
     const data = await res.json();
@@ -245,6 +246,7 @@ function statusLabel(s) {
   const labels = {
     waiting:    '⏳ Bekliyor',
     downloading:'⬇ İndiriliyor',
+    processing: '⚙️ Hızlandırılıyor',
     paused:     '⏸ Duraklatıldı',
     done:       '✅ Tamamlandı',
     error:      '❌ Hata',
@@ -259,7 +261,7 @@ async function renderQueue() {
     const items = await res.json();
 
     // Badge
-    const active = items.filter(j => ['waiting','downloading','paused'].includes(j.status)).length;
+    const active = items.filter(j => ['waiting','downloading','processing','paused'].includes(j.status)).length;
     const badge = document.getElementById('badge-kuyruk');
     if (active > 0) { badge.textContent = active; badge.classList.remove('hidden'); }
     else badge.classList.add('hidden');
@@ -272,10 +274,10 @@ async function renderQueue() {
 
     el.innerHTML = items.map(j => {
       const pct = j.progress?.toFixed(1) || '0.0';
-      const showProgress = ['downloading','paused'].includes(j.status);
+      const showProgress = ['downloading','processing','paused'].includes(j.status);
       const canPause  = j.status === 'downloading';
       const canResume = j.status === 'paused';
-      const canCancel = ['waiting','downloading','paused'].includes(j.status);
+      const canCancel = ['waiting','downloading','processing','paused'].includes(j.status);
       const isDone    = j.status === 'done';
       const displayName = j.custom_name || j.title;
 
@@ -289,6 +291,7 @@ async function renderQueue() {
               ${j.trim_start || j.trim_end ? ' · ✂️ Kırpılıyor' : ''}
               ${j.download_thumbnail ? ' · 🖼' : ''}
               ${j.is_playlist ? ' · 📋 Playlist' : ''}
+              ${j.playback_speed > 1 ? ` · ⚡ ${j.playback_speed}x` : ''}
             </div>
           </div>
           <span class="q-status ${j.status}">${statusLabel(j.status)}</span>
@@ -430,6 +433,7 @@ function resetInfo() {
   videoInfo = null; selectedFormat = null;
   document.getElementById('url-input').value = '';
   document.getElementById('filename-input').value = '';
+  document.getElementById('playback-speed').value = '1';
   document.getElementById('trim-start').value = '';
   document.getElementById('trim-end').value = '';
   document.getElementById('chk-thumbnail').checked = false;

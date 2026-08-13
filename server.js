@@ -176,6 +176,7 @@ function addToHistory(job) {
     thumbnail: job.thumbnail, filename: job.filename,
     url: job.url, audio_only: job.audio_only,
     custom_name: job.custom_name || '',
+    playback_speed: job.playback_speed || 1,
     doneAt: new Date().toISOString()
   });
   saveHistory(h.slice(0, 200));
@@ -194,10 +195,121 @@ function notify(title, msg) {
 
 // ── Kuyruk İşleyici ─────────────────────────────────────────
 function processQueue() {
-  const active = queue.filter(j => j.status === 'downloading').length;
+  const active = queue.filter(j => ['downloading', 'processing'].includes(j.status)).length;
   const waiting = queue.filter(j => j.status === 'waiting');
   const slots = MAX_CONCURRENT - active;
   waiting.slice(0, slots).forEach(startJob);
+}
+
+function normalizePlaybackSpeed(value) {
+  const speed = Number(value);
+  return [1, 1.25, 1.5, 2].includes(speed) ? speed : 1;
+}
+
+function atempoFilter(speed) {
+  let remaining = speed;
+  const filters = [];
+  while (remaining > 2) {
+    filters.push('atempo=2');
+    remaining /= 2;
+  }
+  filters.push(`atempo=${remaining}`);
+  return filters.join(',');
+}
+
+function isValidDownloadedFile(filename) {
+  try {
+    return !!filename && fs.existsSync(filename) && fs.statSync(filename).isFile() &&
+      fs.statSync(filename).size > 1024 * 50;
+  } catch {
+    return false;
+  }
+}
+
+function finishJob(job) {
+  if (job.status === 'cancelled' || job.status === 'error') return;
+  job.status = 'done';
+  job.progress = 100;
+  job.doneAt = new Date().toISOString();
+  job._proc = null;
+  addToHistory(job);
+  notify('Video İndirici', `✅ ${job.title || 'Video'} indirildi!`);
+  processQueue();
+}
+
+function failJob(job, message) {
+  if (job.status === 'cancelled') return;
+  job.status = 'error';
+  job.error = message || job.error || 'İşlem başarısız.';
+  job._proc = null;
+  notify('Video İndirici', `❌ ${job.title || 'Video'} indirilemedi.`);
+  processQueue();
+}
+
+function speedUpDownloadedFile(job, done) {
+  const speed = normalizePlaybackSpeed(job.playback_speed);
+  if (speed <= 1 || !job.filename) return done(null);
+  if (!isValidDownloadedFile(job.filename)) return done(new Error('Hızlandırılacak dosya bulunamadı.'));
+
+  const source = job.filename;
+  const ext = path.extname(source) || (job.audio_only ? '.mp3' : '.mp4');
+  const temp = path.join(path.dirname(source), `.${path.basename(source, ext)}.speed-${job.id}${ext}`);
+  const args = ['-y', '-i', source, '-map_metadata', '0'];
+
+  if (job.audio_only) {
+    args.push('-filter:a', atempoFilter(speed), '-c:a', 'libmp3lame', '-q:a', '0');
+  } else {
+    args.push(
+      '-map', '0:v:0', '-map', '0:a?',
+      '-vf', `setpts=PTS/${speed}`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-filter:a', atempoFilter(speed),
+      '-movflags', '+faststart'
+    );
+  }
+  args.push(temp);
+
+  const proc = spawnProcess(FFMPEG_PATH, args);
+  job._proc = proc;
+  job.speed_pid = proc.pid;
+  let stderr = '';
+  const cleanupTemp = () => { try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch {} };
+
+  proc.stderr.on('data', data => {
+    stderr = `${stderr}\n${data.toString()}`.slice(-4000);
+  });
+  proc.on('error', err => {
+    job.speed_pid = null;
+    cleanupTemp();
+    done(err);
+  });
+  proc.on('close', code => {
+    job.speed_pid = null;
+    if (job.status === 'cancelled') {
+      cleanupTemp();
+      return;
+    }
+    if (code !== 0 || !isValidDownloadedFile(temp)) {
+      cleanupTemp();
+      done(new Error(stderr.trim().split('\n').slice(-1)[0] || 'Video hızı değiştirilemedi.'));
+      return;
+    }
+
+    const backup = `${source}.before-speed-${job.id}`;
+    try {
+      fs.renameSync(source, backup);
+      fs.renameSync(temp, source);
+      fs.unlinkSync(backup);
+      done(null);
+    } catch (err) {
+      cleanupTemp();
+      try {
+        if (!fs.existsSync(source) && fs.existsSync(backup)) fs.renameSync(backup, source);
+      } catch {}
+      done(err);
+    }
+  });
 }
 
 function startJob(job) {
@@ -205,6 +317,7 @@ function startJob(job) {
   job.progress = 0;
 
   const isAudio = job.audio_only === true;
+  job.playback_speed = normalizePlaybackSpeed(job.playback_speed);
   const customStem = sanitizeFileStem(job.custom_name);
   const outputTemplate = customStem
     ? path.join(getDownloadDir(), job.is_playlist
@@ -262,9 +375,7 @@ function startJob(job) {
 
   proc.on('error', (err) => {
     if (job.status === 'cancelled') return;
-    job.error = err.message || 'İndirme işlemi başlatılamadı.';
-    job.status = 'error';
-    processQueue();
+    failJob(job, err.message || 'İndirme işlemi başlatılamadı.');
   });
 
   proc.stdout.on('data', (data) => {
@@ -300,19 +411,23 @@ function startJob(job) {
     if (job.status === 'cancelled' || job.status === 'error') return;
 
     // ECONNRESET / kesinti kurtarma kontrolü
-    const fileExistsAndValid = job.filename && fs.existsSync(job.filename) && fs.statSync(job.filename).size > 1024 * 50;
+    const fileExistsAndValid = isValidDownloadedFile(job.filename);
 
     if (code === 0 || fileExistsAndValid) {
-      job.status = 'done';
-      job.progress = 100;
-      job.doneAt = new Date().toISOString();
-      addToHistory(job);
-      notify('Video İndirici', `✅ ${job.title || 'Video'} indirildi!`);
+      if (job.playback_speed > 1) {
+        job.status = 'processing';
+        job.progress = 99;
+        speedUpDownloadedFile(job, err => {
+          if (job.status === 'cancelled') return;
+          if (err) return failJob(job, `2x hızlandırma başarısız: ${err.message}`);
+          finishJob(job);
+        });
+      } else {
+        finishJob(job);
+      }
     } else {
-      job.status = 'error';
-      notify('Video İndirici', `❌ ${job.title || 'Video'} indirilemedi.`);
+      failJob(job);
     }
-    processQueue();
   });
 
   job._proc = proc;
@@ -612,7 +727,7 @@ app.get('/api/download-thumbnail-file', requireAuth, rateLimit(60 * 1000, 30, 't
 // ── API: Kuyruğa Ekle ──────────────────────────────────────
 app.post('/api/queue/add', requireAuth, rateLimit(60 * 1000, 10, 'queue-add'), (req, res) => {
   const { url, format_id, audio_only, title, thumbnail, platform,
-          trim_start, trim_end, download_thumbnail, is_playlist, custom_name } = req.body;
+          trim_start, trim_end, download_thumbnail, is_playlist, custom_name, playback_speed } = req.body;
 
   if (!url) return res.status(400).json({ error: 'URL gerekli' });
   if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Geçersiz URL' });
@@ -626,6 +741,7 @@ app.post('/api/queue/add', requireAuth, rateLimit(60 * 1000, 10, 'queue-add'), (
     url, format_id, audio_only: !!audio_only,
     title: title || 'Video', thumbnail, platform,
     custom_name: sanitizeFileStem(custom_name) || '',
+    playback_speed: normalizePlaybackSpeed(playback_speed),
     trim_start: trim_start || '', trim_end: trim_end || '',
     download_thumbnail: !!download_thumbnail,
     is_playlist: !!is_playlist,

@@ -487,6 +487,21 @@ body {
 .info-body input[readonly] { opacity: 0.55; cursor: default; }
 .info-body input::placeholder { color: var(--text3); }
 
+.speed-select {
+  width: 100%;
+  appearance: none;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.87rem;
+  outline: none;
+  cursor: pointer;
+}
+.speed-select:focus { border-color: var(--border2); }
+
 .input-row { display: flex; gap: 8px; }
 .input-row input { flex: 1; }
 
