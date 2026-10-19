@@ -2,3 +2,9 @@
 app.log
 downloads/
 node_modules/
+.env
+.env.*
+!.env.example
+*.app/
+build/
+vdhcoapp-master.zip

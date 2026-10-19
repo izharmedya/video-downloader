@@ -20,7 +20,7 @@ app.use(express.static('public'));
 // PORT=3131  PASSWORD=sifren   DOWNLOADS_DIR=/path/to/dir
 // YTDLP_PATH=...  FFMPEG_PATH=...  MAX_CONCURRENT=2
 const PORT = parseInt(process.env.PORT || '3131', 10);
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';
 // İndirme klasörü çalışırken değiştirilebilir (uygulama içinden klasör seçilebilir).
 let downloadDir = path.resolve(process.env.DOWNLOADS_DIR || path.join(__dirname, 'downloads'));
 const HISTORY_FILE = path.join(downloadDir, 'history.json');
@@ -509,6 +509,49 @@ app.post('/api/download-dir', requireAuth, (req, res) => {
     res.status(500).json({ error: 'Klasör ayarlanamadı: ' + (e.message || '') });
   }
 });
+
+// ── API: Native macOS Klasör Seçici ──────────────────────────
+app.get('/api/pick-folder', requireAuth, (req, res) => {
+  try {
+    if (process.platform === 'darwin') {
+      const folder = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Video indirme klasörünü seçin:")'`, { encoding: 'utf8' }).trim();
+      if (folder) {
+        downloadDir = path.resolve(folder);
+        return res.json({ ok: true, path: downloadDir });
+      }
+    }
+    return res.status(204).end();
+  } catch {
+    return res.status(204).end();
+  }
+});
+
+// ── API: Klasörü Finder'da Aç ────────────────────────────────
+app.post('/api/open-dir', requireAuth, (req, res) => {
+  try {
+    const target = (req.body && req.body.path) || downloadDir;
+    if (process.platform === 'darwin') {
+      execSync(`open "${target}"`);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Açılamadı' });
+  }
+});
+
+// ── API: Dosyayı Finder'da Göster ────────────────────────────
+app.post('/api/show-file', requireAuth, (req, res) => {
+  try {
+    const target = req.body && req.body.path;
+    if (target && process.platform === 'darwin') {
+      execSync(`open -R "${target}"`);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Gösterilemedi' });
+  }
+});
+
 
 // ── API: Video Bilgisi ──────────────────────────────────────
 app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) => {

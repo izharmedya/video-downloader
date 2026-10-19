@@ -94,36 +94,63 @@ async function loadDefaultPath() {
   } catch {}
 }
 
-// ── Klasör Seç (native) ──────────────────────────────────
+// ── Klasör Seç (native + web fallback) ────────────────────
 async function chooseDownloadDir() {
-  if (!window.izhar) return alert('Klasör seçme sadece masaüstü uygulamasında çalışır.');
-  const p = await window.izhar.chooseFolder();
-  if (!p) return;
+  if (window.izhar && window.izhar.chooseFolder) {
+    const p = await window.izhar.chooseFolder();
+    if (!p) return;
+    try {
+      const res = await api('/api/download-dir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      });
+      const d = await res.json();
+      if (!res.ok) return alert(d.error || 'Klasör ayarlanamadı.');
+      document.getElementById('save-path').value = d.path;
+    } catch {
+      alert('Sunucuya bağlanılamadı.');
+    }
+    return;
+  }
+  // Tarayıcı fallback
   try {
-    const res = await api('/api/download-dir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: p })
-    });
+    const res = await api('/api/pick-folder');
+    if (res.status === 204) return;
     const d = await res.json();
-    if (!res.ok) return alert(d.error || 'Klasör ayarlanamadı.');
-    document.getElementById('save-path').value = d.path;
+    if (d && d.path) {
+      document.getElementById('save-path').value = d.path;
+    }
   } catch {
-    alert('Sunucuya bağlanılamadı.');
+    alert('Klasör seçici açılamadı.');
   }
 }
 
 function openDownloadDir() {
   const p = document.getElementById('save-path').value;
-  if (window.izhar && p) window.izhar.openFolder(p);
-  else if (p) alert(p);
+  if (window.izhar && p) {
+    window.izhar.openFolder(p);
+  } else if (p) {
+    api('/api/open-dir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p })
+    }).catch(() => {});
+  }
 }
 
 // ── Finder'da göster ─────────────────────────────────────
 function showDownloaded(filename) {
   if (!filename) return;
-  if (window.izhar) window.izhar.showInFolder(filename);
-  else alert(filename);
+  if (window.izhar && window.izhar.showInFolder) {
+    window.izhar.showInFolder(filename);
+  } else {
+    api('/api/show-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filename })
+    }).catch(() => {});
+  }
 }
 
 // ── Video Bilgisi Al ──────────────────────────────────────
