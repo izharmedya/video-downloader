@@ -8,3 +8,4 @@ node_modules/
 *.app/
 build/
 vdhcoapp-master.zip
+.agents/

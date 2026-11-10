@@ -1,6 +1,6 @@
 #!/bin/bash
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-export PATH="/Users/izharmedya/.gemini/antigravity/bin:/Users/izharmedya/Library/Application Support/Antigravity/bin:/Users/izharmedya/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/Users/izharmedya/.gemini/antigravity/bin:/Users/izharmedya/Library/Application Support/Antigravity/bin:/Users/izharmedya/.local/bin:$PATH"
 export IZ_LOCAL=1
 cd "$DIR"
 

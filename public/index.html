@@ -3,99 +3,290 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Video İndirici</title>
+  <title>Video İndirici · beUI Studio</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="beui-cursor-follower" id="beui-cursor-follower" aria-hidden="true"></div>
 
-<!-- ══ GİRİŞ EKRANI ═══════════════════════════════════ -->
-<div class="login-overlay hidden" id="login-overlay">
-  <div class="login-card">
-    <div class="login-logo">🎬</div>
+<!-- ══ GİRİŞ EKRANI (Devre dışı - girişsiz kullanım) ════ -->
+<div class="login-overlay hidden" id="login-overlay" style="display: none !important;">
+  <div class="login-card" data-beam="true" data-active="true">
+    <div class="data-beam-bloom"></div>
+    <div class="login-logo" aria-hidden="true">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="20" height="20" rx="6" />
+        <polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/>
+      </svg>
+    </div>
     <h2 class="login-title">Video İndirici</h2>
     <p class="login-sub">Devam etmek için şifreyi girin</p>
-    <input type="password" id="login-password" placeholder="Şifre" autocomplete="current-password" />
-    <button id="btn-login" class="btn-add-queue" onclick="login()">Giriş Yap</button>
-    <p class="login-error hidden" id="login-error">Yanlış şifre</p>
+    <input type="password" id="login-password" placeholder="Şifre" autocomplete="current-password" aria-label="Giriş Şifresi" />
+    <button id="btn-login" class="btn-add-queue animate-rainbow-border" onclick="login()"><span>Giriş Yap</span></button>
+    <p class="login-error hidden" id="login-error" role="alert" aria-live="polite">Yanlış şifre</p>
+  </div>
+</div>
+
+<!-- ══ COMMAND PALETTE (⌘K) ═════════════════════════════ -->
+<div class="cmd-palette-backdrop hidden" id="command-palette-modal" onclick="onCmdBackdropClick(event)">
+  <div class="cmd-palette-card" role="dialog" aria-modal="true" aria-label="Komut Paleti">
+    <div class="cmd-palette-search">
+      <span class="cmd-search-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </span>
+      <input type="text" id="cmd-palette-input" placeholder="Bir URL yapıştırın veya komut arayın..." autocomplete="off" oninput="filterCommandPalette(this.value)" onkeydown="handleCmdPaletteKey(event)" />
+      <kbd class="cmd-esc-kbd" onclick="closeCommandPalette()">ESC</kbd>
+    </div>
+    <div class="cmd-palette-list" id="cmd-palette-list" role="listbox">
+      <!-- Dinamik ve filtrelenebilir komutlar JS tarafından render edilir -->
+    </div>
   </div>
 </div>
 
 <div class="layout">
 
-  <!-- ══ SIDEBAR ══════════════════════════════════════ -->
-  <nav class="sidebar">
-    <div class="sidebar-logo">🎬</div>
+  <!-- ══ SIDEBAR (beUI Dock Navigation) ═════════════════ -->
+  <nav class="sidebar" aria-label="Ana Menü">
+    <div class="sidebar-logo" title="beUI Video Downloader">
+      <svg class="beui-logo-svg" viewBox="0 0 100 100" aria-hidden="true">
+        <defs>
+          <linearGradient id="logo-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#38bdf8"/>
+            <stop offset="50%" stop-color="#818cf8"/>
+            <stop offset="100%" stop-color="#f472b6"/>
+          </linearGradient>
+        </defs>
+        <rect width="100" height="100" rx="30" fill="url(#logo-grad)"/>
+        <path d="M38 30 L72 50 L38 70 Z" fill="#ffffff"/>
+      </svg>
+    </div>
 
-    <div class="sidebar-tabs">
-      <button class="sidebar-tab" id="tab-indir" onclick="switchTab('indir')">
-        <span class="sidebar-tab-icon">⬇</span>
+    <div class="sidebar-tabs" role="tablist">
+      <div class="sidebar-glider" id="sidebar-glider"></div>
+      <button class="sidebar-tab active" id="tab-indir" onclick="switchTab('indir')" role="tab" aria-selected="true" aria-controls="section-indir" title="Video İndir">
+        <span class="sidebar-tab-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </span>
         <span class="sidebar-tab-label">İndir</span>
       </button>
-      <button class="sidebar-tab" id="tab-thumbnail" onclick="switchTab('thumbnail')">
-        <span class="sidebar-tab-icon">🖼</span>
+      <button class="sidebar-tab" id="tab-thumbnail" onclick="switchTab('thumbnail')" role="tab" aria-selected="false" aria-controls="section-thumbnail" title="Kapak Resmi">
+        <span class="sidebar-tab-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="4" ry="4"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+        </span>
         <span class="sidebar-tab-label">Kapak</span>
       </button>
-      <button class="sidebar-tab" id="tab-kuyruk" onclick="switchTab('kuyruk')">
-        <span class="sidebar-tab-icon">📋</span>
+      <button class="sidebar-tab" id="tab-kuyruk" onclick="switchTab('kuyruk')" role="tab" aria-selected="false" aria-controls="section-kuyruk" title="İndirme Kuyruğu">
+        <span class="sidebar-tab-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="8" y1="6" x2="21" y2="6"/>
+            <line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/>
+            <polyline points="3 6 4 7 6 5"/>
+            <polyline points="3 12 4 13 6 11"/>
+            <polyline points="3 18 4 19 6 17"/>
+          </svg>
+        </span>
         <span class="sidebar-tab-label">Kuyruk</span>
-        <span class="sidebar-badge hidden" id="badge-kuyruk">0</span>
+        <span class="sidebar-badge hidden" id="badge-kuyruk" aria-label="Aktif indirme sayısı">0</span>
       </button>
-      <button class="sidebar-tab" id="tab-gecmis" onclick="switchTab('gecmis')">
-        <span class="sidebar-tab-icon">📊</span>
+      <button class="sidebar-tab" id="tab-gecmis" onclick="switchTab('gecmis')" role="tab" aria-selected="false" aria-controls="section-gecmis" title="İndirme Geçmişi">
+        <span class="sidebar-tab-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <polyline points="12 7 12 12 15 15"/>
+          </svg>
+        </span>
         <span class="sidebar-tab-label">Geçmiş</span>
       </button>
     </div>
 
     <div class="sidebar-bottom">
-      <button class="btn-logout hidden" id="btn-logout" onclick="logout()" title="Çıkış yap">⎋ Çıkış</button>
-      <button class="theme-btn" id="theme-dark"  onclick="setTheme('dark')"  title="Karanlık">Aa</button>
-      <button class="theme-btn" id="theme-light" onclick="setTheme('light')" title="Aydınlık">☀</button>
-      <button class="theme-btn" id="theme-pink"  onclick="setTheme('pink')"  title="Pembe">✿</button>
+      <button class="btn-logout hidden" id="btn-logout" onclick="logout()" title="Çıkış yap" style="display: none !important;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+        <span>Çıkış</span>
+      </button>
+      <div class="theme-pill-track">
+        <div class="theme-pill-glider" id="theme-pill-glider"></div>
+        <button class="theme-btn active" id="theme-dark"  onclick="setTheme('dark')"  title="Karanlık Tema" aria-label="Karanlık Tema">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+        <button class="theme-btn" id="theme-light" onclick="setTheme('light')" title="Aydınlık Tema" aria-label="Aydınlık Tema">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+        </button>
+        <button class="theme-btn" id="theme-pink"  onclick="setTheme('pink')"  title="Pembe Tema" aria-label="Pembe Tema">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4L12 2z"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </nav>
 
   <!-- ══ MAIN PANEL ════════════════════════════════════ -->
-  <div class="main-panel">
+  <main class="main-panel" id="main-panel" role="main">
+
+    <!-- ═══ TOP BAR (Dynamic Island & Global Actions) ═══ -->
+    <header class="top-nav-bar">
+      <div class="top-nav-left">
+        <div class="app-brand-chip">
+          <span class="brand-pulse-dot"></span>
+          <span class="brand-name">Video Downloader</span>
+          <span class="brand-badge">beUI Pro</span>
+        </div>
+      </div>
+
+      <!-- beUI Dynamic Island (Live Activity & Shortcuts) -->
+      <div class="top-nav-center">
+        <div class="dynamic-island" id="dynamic-island" onclick="onDynamicIslandClick()" title="İndirme durumunu gör veya komutları aç">
+          <div class="island-content" id="island-content">
+            <span class="island-dot idle" id="island-dot"></span>
+            <span class="island-text" id="island-text">Hazır · Link yapıştırın</span>
+            <kbd class="island-kbd">⌘K</kbd>
+          </div>
+        </div>
+      </div>
+
+      <div class="top-nav-right">
+        <button type="button" class="topbar-cmd-btn" onclick="openCommandPalette()" title="Komut paletini aç (⌘K)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <span class="cmd-btn-text">Komut Ara...</span>
+          <kbd class="cmd-btn-kbd">⌘K</kbd>
+        </button>
+        <button type="button" class="topbar-icon-btn" id="btn-topbar-folder" onclick="openDownloadDir()" title="İndirilenler klasörünü aç" aria-label="İndirilenler klasörünü aç">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
 
     <!-- ═══ İNDİR SEKMESİ ═══ -->
-    <!-- JS tarafından style.display ile açılıp kapanır -->
-    <section class="tab-content" id="section-indir" style="display:none">
+    <section class="tab-content" id="section-indir" role="tabpanel" aria-labelledby="tab-indir" style="display:none">
       <div class="download-zone">
 
-        <!-- URL Girişi -->
-        <p class="download-zone-title">YouTube · TikTok · Instagram · Twitter · SoundCloud</p>
-        <div class="url-input-wrap">
-          <input type="text" id="url-input" placeholder="linki buraya yapıştır" autocomplete="off" />
-          <button id="btn-fetch" class="btn-fetch-inline" onclick="fetchInfo()">İndir</button>
+        <!-- Desteklenen Platform Rozetleri -->
+        <div class="platform-chips-row">
+          <span class="platform-chip" data-platform="youtube"><span class="chip-dot yt"></span>YouTube</span>
+          <span class="platform-chip" data-platform="tiktok"><span class="chip-dot tt"></span>TikTok</span>
+          <span class="platform-chip" data-platform="instagram"><span class="chip-dot ig"></span>Instagram</span>
+          <span class="platform-chip" data-platform="kick"><span class="chip-dot kc"></span>Kick</span>
+          <span class="platform-chip" data-platform="twitter"><span class="chip-dot tw"></span>Twitter/X</span>
+          <span class="platform-chip" data-platform="soundcloud"><span class="chip-dot sc"></span>SoundCloud</span>
         </div>
 
+        <!-- URL Giriş Kartı (beUI Beam Border) -->
+        <div class="url-input-container" data-beam="true" data-active="true">
+          <div class="data-beam-bloom"></div>
+          <div class="url-input-wrap">
+            <div class="url-icon-lead" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+            </div>
+            <input type="text" id="url-input" placeholder="video veya ses linkini buraya yapıştırın..." autocomplete="off" aria-label="İndirilecek video veya ses linki" oninput="onUrlInputChange(this.value)" />
+            <button type="button" class="btn-input-action" id="btn-clear-url" onclick="clearUrlInput()" title="Temizle" style="display:none">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            <button type="button" class="btn-input-action" id="btn-paste-url" onclick="pasteFromClipboard('url-input')" title="Panodan Yapıştır">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+              </svg>
+              <span>Yapıştır</span>
+            </button>
+            <button id="btn-fetch" class="btn-fetch-inline animate-rainbow-border" onclick="fetchInfo()">
+              <span>İndir</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <p class="download-zone-title">4K UHD · 1440p · 1080p · Premiere Pro Uyumlu H.264/AAC · 320k MP3</p>
+
         <!-- Yükleniyor: Akıcı Çözümleme Barı -->
-        <div class="inline-loading" id="card-loading" style="display:none">
+        <div class="inline-loading" id="card-loading" style="display:none" role="status" aria-live="polite">
           <div class="fetch-progress-header">
-            <span id="fetch-status-text">Video bilgisi çözümleniyor...</span>
+            <div class="fetch-status-group">
+              <span class="spinner-beui"></span>
+              <span id="fetch-status-text">Video bilgisi çözümleniyor...</span>
+            </div>
+            <span id="fetch-pct-text">0%</span>
           </div>
           <div class="fetch-bar-bg">
             <div class="fetch-bar-indeterminate" id="fetch-bar"></div>
           </div>
         </div>
 
-        <!-- Hata -->
-        <div class="inline-error" id="card-error" style="display:none">
-          <span id="error-msg">❌ Hata</span>
-          <button class="btn-secondary btn-sm" onclick="resetInfo()">Tekrar Dene</button>
+        <!-- Hata Bildirimi -->
+        <div class="inline-error" id="card-error" style="display:none" role="alert" aria-live="assertive">
+          <div class="error-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
+          <div class="error-content">
+            <div class="error-title">Video Bilgisi Alınamadı</div>
+            <div class="error-msg" id="error-msg">Hata</div>
+          </div>
+          <div class="error-actions">
+            <button type="button" class="btn-secondary btn-sm" id="btn-copy-error" onclick="copyErrorToClipboard('error-msg')" title="Hata mesajını panoya kopyala">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Kopyala</span>
+            </button>
+            <button type="button" class="btn-secondary btn-sm" onclick="resetInfo()">Tekrar Dene</button>
+          </div>
         </div>
 
-        <!-- Video Bilgisi + Seçenekler -->
-        <div class="info-card" id="card-info" style="display:none">
+        <!-- Video Bilgisi + Seçenekler (beUI 3D Tilt Card) -->
+        <div class="info-card be-tilt" id="card-info" style="display:none">
+          <div class="tilt-glare"></div>
 
           <!-- Meta -->
           <div class="info-meta">
-            <img id="thumb" class="media-thumb" src="" alt="" style="display:none" />
+            <div class="media-thumb-wrap">
+              <img id="thumb" class="media-thumb" src="" alt="Video Önizleme Görseli" style="display:none" />
+              <div class="thumb-overlay-badge" id="thumb-quality-pill">HD</div>
+            </div>
             <div class="media-info-text">
               <h3 id="info-title"></h3>
               <p id="info-uploader"></p>
-              <p id="info-platform" style="color:var(--primary);font-weight:700;font-size:.78rem"></p>
-              <span class="badge-playlist hidden" id="badge-playlist"></span>
+              <div class="info-badges-row">
+                <p id="info-platform"></p>
+                <span class="badge-playlist hidden" id="badge-playlist"></span>
+              </div>
             </div>
           </div>
 
@@ -103,72 +294,165 @@
 
             <!-- Playlist -->
             <div class="hidden" id="row-playlist">
-              <label class="toggle-label">
+              <label class="toggle-label be-switch-wrap">
                 <input type="checkbox" id="chk-playlist" checked />
-                <span>📋 Tüm playlist'i indir</span>
+                <span class="be-switch-slider"></span>
+                <span class="toggle-text">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                    <line x1="8" y1="6" x2="21" y2="6"/>
+                    <line x1="8" y1="12" x2="21" y2="12"/>
+                    <line x1="8" y1="18" x2="21" y2="18"/>
+                    <line x1="3" y1="6" x2="3.01" y2="6"/>
+                    <line x1="3" y1="12" x2="3.01" y2="12"/>
+                    <line x1="3" y1="18" x2="3.01" y2="18"/>
+                  </svg>
+                  Tüm playlist'i indir
+                </span>
               </label>
             </div>
 
-            <!-- Kalite -->
-            <div>
-              <p class="info-label">Kalite</p>
-              <div id="format-list" class="format-list"></div>
+            <!-- Kalite & Format Seçimi -->
+            <div class="quality-section">
+              <div class="quality-header-row">
+                <p class="info-label">Kalite &amp; Format</p>
+                <span class="quality-badge-premiere" title="Adobe Premiere Pro, Apple QuickTime ve VLC ile tam uyumlu H.264/AAC ve MP3 çıktısı">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                    <rect x="2" y="2" width="20" height="20" rx="4"/>
+                    <line x1="7" y1="2" x2="7" y2="22"/>
+                    <line x1="17" y1="2" x2="17" y2="22"/>
+                    <line x1="2" y1="12" x2="22" y2="12"/>
+                  </svg>
+                  Premiere Pro Uyumlu
+                </span>
+              </div>
+              <div id="format-list" class="format-list" role="radiogroup" aria-label="Format ve Kalite Seçimi"></div>
+              <p class="info-note" id="format-hint">Seçilen video en yüksek 4K (2160p), 1440p veya 1080p kalitesinde H.264 MP4 olarak; sesler 320 kbps MP3 olarak kaydedilir.</p>
             </div>
 
-            <!-- Video Hızı -->
+            <!-- Video Hızı (beUI Segmented Chips + Native Select) -->
             <div>
-              <p class="info-label">⚡ Video Hızı</p>
-              <select id="playback-speed" class="speed-select">
+              <p class="info-label">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+                Oynatma Hızı
+              </p>
+              <div class="segmented-control" id="speed-segmented">
+                <div class="segmented-glider" id="speed-glider"></div>
+                <button type="button" class="seg-btn active" data-speed="1" onclick="setSpeedSegment('1')">1x Normal</button>
+                <button type="button" class="seg-btn" data-speed="1.25" onclick="setSpeedSegment('1.25')">1.25x</button>
+                <button type="button" class="seg-btn" data-speed="1.5" onclick="setSpeedSegment('1.5')">1.5x</button>
+                <button type="button" class="seg-btn" data-speed="2" onclick="setSpeedSegment('2')">2x Hızlı</button>
+              </div>
+              <!-- Erişilebilirlik ve test uyumluluğu için native select senkronize çalışır -->
+              <select id="playback-speed" class="speed-select hidden" aria-label="Video ve ses oynatma hızı">
                 <option value="1">1x Normal</option>
                 <option value="1.25">1.25x Hızlandırılmış</option>
                 <option value="1.5">1.5x Hızlandırılmış</option>
                 <option value="2">2x Hızlandırılmış</option>
               </select>
-              <p class="info-note">Video ve ses indirme sonrası seçtiğin hıza dönüştürülür.</p>
+              <p class="info-note">Video ve ses indirme sonrası seçtiğin hıza kayıpsız dönüştürülür.</p>
             </div>
 
             <!-- Trim -->
             <div>
-              <p class="info-label">✂ Video Kırp <span class="optional">(opsiyonel)</span></p>
+              <div class="trim-header-row">
+                <p class="info-label">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                    <circle cx="6" cy="6" r="3"/>
+                    <circle cx="6" cy="18" r="3"/>
+                    <line x1="20" y1="4" x2="8.12" y2="15.88"/>
+                    <line x1="14.47" y1="14.48" x2="20" y2="20"/>
+                    <line x1="8.12" y1="8.12" x2="12" y2="12"/>
+                  </svg>
+                  Video Kırp <span class="optional">(opsiyonel)</span>
+                </p>
+                <div class="trim-presets">
+                  <button type="button" class="trim-preset-chip" onclick="applyTrimPreset('start-0')">00:00</button>
+                  <button type="button" class="trim-preset-chip" onclick="applyTrimOffset(15)">+15s</button>
+                  <button type="button" class="trim-preset-chip" onclick="applyTrimOffset(30)">+30s</button>
+                  <button type="button" class="trim-preset-chip" onclick="applyTrimOffset(60)">+1dk</button>
+                  <button type="button" class="trim-preset-chip" onclick="clearTrimFields()">Temizle</button>
+                </div>
+              </div>
               <div class="trim-row">
                 <div class="trim-field">
                   <span>Başlangıç</span>
-                  <input type="text" id="trim-start" placeholder="00:01:30" />
+                  <input type="text" id="trim-start" placeholder="00:01:30" aria-label="Başlangıç zamanı (ss:dd:ss)" />
                 </div>
                 <div class="trim-sep">→</div>
                 <div class="trim-field">
                   <span>Bitiş</span>
-                  <input type="text" id="trim-end" placeholder="00:03:00" />
+                  <input type="text" id="trim-end" placeholder="00:03:00" aria-label="Bitiş zamanı (ss:dd:ss)" />
                 </div>
               </div>
             </div>
 
             <!-- Thumbnail -->
-            <label class="toggle-label">
+            <label class="toggle-label be-switch-wrap">
               <input type="checkbox" id="chk-thumbnail" />
-              <span>🖼 Thumbnail'i de indir (.jpg)</span>
+              <span class="be-switch-slider"></span>
+              <span class="toggle-text">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                  <rect x="3" y="3" width="18" height="18" rx="4"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+                Yüksek çözünürlüklü kapak resmini de indir (.jpg)
+              </span>
             </label>
 
             <!-- Kayıt Klasörü -->
             <div>
-              <p class="info-label">📁 Kayıt Yeri</p>
+              <p class="info-label">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                Kayıt Yeri
+              </p>
               <div class="input-row">
-                <input type="text" id="save-path" readonly placeholder="Sunucudaki indirme klasörü" />
-                <button type="button" id="btn-open-dir" class="btn-secondary btn-sm" onclick="openDownloadDir()" title="Bu klasörü aç">↗ Aç</button>
-                <button type="button" id="btn-choose-dir" class="btn-secondary btn-sm" onclick="chooseDownloadDir()" title="Klasör seç">📁 Seç</button>
+                <input type="text" id="save-path" readonly placeholder="Sunucudaki indirme klasörü" aria-label="Kayıt klasörü yolu" />
+                <button type="button" id="btn-open-dir" class="btn-secondary btn-sm" onclick="openDownloadDir()" title="Bu klasörü aç">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                    <polyline points="15 3 21 3 21 9"/>
+                    <line x1="10" y1="14" x2="21" y2="3"/>
+                  </svg>
+                  <span>Aç</span>
+                </button>
+                <button type="button" id="btn-choose-dir" class="btn-secondary btn-sm" onclick="chooseDownloadDir()" title="Klasör seç">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  <span>Seç</span>
+                </button>
               </div>
               <p class="info-note">Dosyalar buraya kaydedilir; "<b>Seç</b>" ile bilgisayarından bir klasör seçebilirsin.</p>
             </div>
 
             <!-- Özel Dosya Adı -->
             <div>
-              <p class="info-label">✏️ Dosya Adı <span class="optional">(opsiyonel)</span></p>
-              <input type="text" id="filename-input" maxlength="180" placeholder="İndirilen dosyanın adı" autocomplete="off" />
-              <p class="info-note">Uzantı otomatik eklenir; boş bırakırsan video başlığı kullanılır.</p>
+              <p class="info-label">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                  <path d="M12 20h9"/>
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                </svg>
+                Dosya Adı <span class="optional">(opsiyonel)</span>
+              </p>
+              <input type="text" id="filename-input" maxlength="180" placeholder="Özel dosya adı girin (uzantı otomatik eklenir)" autocomplete="off" aria-label="Özel dosya adı" />
+              <p class="info-note">Boş bırakırsan orijinal video başlığı otomatik temizlenerek kullanılır.</p>
             </div>
 
             <!-- Kuyruğa Ekle -->
-            <button id="btn-add" class="btn-add-queue" onclick="addToQueue()">➕ Kuyruğa Ekle</button>
+            <button id="btn-add" class="btn-add-queue animate-rainbow-border" onclick="addToQueue()">
+              <span class="btn-add-inner">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                <span>Kuyruğa Ekle</span>
+              </span>
+            </button>
 
           </div>
         </div>
@@ -177,37 +461,81 @@
     </section>
 
     <!-- ═══ KAPAK RESMİ (THUMBNAIL) SEKMESİ ═══ -->
-    <section class="tab-content" id="section-thumbnail" style="display:none">
+    <section class="tab-content" id="section-thumbnail" role="tabpanel" aria-labelledby="tab-thumbnail" style="display:none">
       <div class="download-zone">
 
-        <p class="download-zone-title">Video Kapak Resmi (Thumbnail) İndirici</p>
-        <div class="url-input-wrap">
-          <input type="text" id="thumb-url-input" placeholder="video linkini buraya yapıştır" autocomplete="off" />
-          <button id="btn-fetch-thumb" class="btn-fetch-inline" onclick="fetchThumbnailInfo()">Kapak Bul</button>
+        <p class="download-zone-title">Video Kapak Resmi (Thumbnail) Stüdyosu</p>
+
+        <div class="url-input-container" data-beam="true" data-active="true">
+          <div class="data-beam-bloom"></div>
+          <div class="url-input-wrap">
+            <div class="url-icon-lead" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="4"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+            </div>
+            <input type="text" id="thumb-url-input" placeholder="video bağlantısını buraya yapıştırın..." autocomplete="off" aria-label="Kapak resmi indirilecek video linki" />
+            <button type="button" class="btn-input-action" id="btn-paste-thumb" onclick="pasteFromClipboard('thumb-url-input')" title="Panodan Yapıştır">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+              </svg>
+              <span>Yapıştır</span>
+            </button>
+            <button id="btn-fetch-thumb" class="btn-fetch-inline animate-rainbow-border" onclick="fetchThumbnailInfo()">
+              <span>Kapak Bul</span>
+            </button>
+          </div>
         </div>
 
         <!-- Yükleniyor: Akıcı Çözümleme Barı -->
-        <div class="inline-loading" id="card-loading-thumb" style="display:none">
+        <div class="inline-loading" id="card-loading-thumb" style="display:none" role="status" aria-live="polite">
           <div class="fetch-progress-header">
-            <span id="fetch-status-text-thumb">Kapak resmi çözümleniyor...</span>
+            <div class="fetch-status-group">
+              <span class="spinner-beui"></span>
+              <span id="fetch-status-text-thumb">Kapak resmi çözümleniyor...</span>
+            </div>
+            <span id="fetch-pct-text-thumb">0%</span>
           </div>
           <div class="fetch-bar-bg">
             <div class="fetch-bar-indeterminate" id="fetch-bar-thumb"></div>
           </div>
         </div>
 
-        <!-- Hata -->
-        <div class="inline-error" id="card-error-thumb" style="display:none">
-          <span id="error-msg-thumb">❌ Hata</span>
-          <button class="btn-secondary btn-sm" onclick="resetThumbnailInfo()">Tekrar Dene</button>
+        <!-- Hata Bildirimi -->
+        <div class="inline-error" id="card-error-thumb" style="display:none" role="alert" aria-live="assertive">
+          <div class="error-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
+          <div class="error-content">
+            <div class="error-title">Kapak Resmi Alınamadı</div>
+            <div class="error-msg" id="error-msg-thumb">Hata</div>
+          </div>
+          <div class="error-actions">
+            <button type="button" class="btn-secondary btn-sm" id="btn-copy-error-thumb" onclick="copyErrorToClipboard('error-msg-thumb')" title="Hata mesajını panoya kopyala">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Kopyala</span>
+            </button>
+            <button type="button" class="btn-secondary btn-sm" onclick="resetThumbnailInfo()">Tekrar Dene</button>
+          </div>
         </div>
 
-        <!-- Büyük Kapak Önizleme + İndirme Seçenekleri -->
-        <div class="info-card" id="card-thumb-result" style="display:none">
+        <!-- Büyük Kapak Önizleme + İndirme Seçenekleri (beUI 3D Tilt Card) -->
+        <div class="info-card be-tilt" id="card-thumb-result" style="display:none">
+          <div class="tilt-glare"></div>
 
           <!-- Büyük Kapak Görseli -->
           <div class="thumb-large-wrap">
-            <img id="thumb-large-preview" class="thumb-large-img" src="" alt="Video Kapak Resmi" />
+            <img id="thumb-large-preview" class="thumb-large-img" src="" alt="Video Kapak Resmi Önizleme" />
           </div>
 
           <div class="info-body">
@@ -217,15 +545,24 @@
               <p id="thumb-info-platform" style="color:var(--primary);font-weight:700;font-size:.78rem"></p>
             </div>
 
+            <!-- A/B Test ve Alternatif Kapak Varyantları (Görsel Seçici) -->
+            <div id="thumb-variants-wrap" class="thumb-variants-wrap" style="display:none">
+              <div class="variants-header">
+                <span class="info-label" style="margin-bottom:0">A/B Test ve Alternatif Kapaklar</span>
+                <span class="variants-count-badge" id="variants-count-badge">0 Seçenek</span>
+              </div>
+              <div id="thumb-variants-grid" class="thumb-variants-grid" role="radiogroup" aria-label="Kapak Varyantı Seçimi"></div>
+            </div>
+
             <!-- Kalite / Çözünürlük Seçenekleri -->
             <div>
               <p class="info-label">Kapak Çözünürlüğü</p>
-              <div id="thumb-format-list" class="format-list"></div>
+              <div id="thumb-format-list" class="format-list" role="radiogroup" aria-label="Kapak Çözünürlüğü Seçimi"></div>
             </div>
 
             <!-- Doğrudan İndir Butonu -->
-            <button id="btn-download-thumb" class="btn-add-queue" onclick="downloadSelectedThumbnail()">
-              🖼 Seçilen Çözünürlükte İndir (.jpg)
+            <button id="btn-download-thumb" class="btn-add-queue animate-rainbow-border" onclick="downloadSelectedThumbnail()">
+              <span>Seçilen Kapak Resmini İndir (.jpg)</span>
             </button>
           </div>
 
@@ -235,39 +572,133 @@
     </section>
 
     <!-- ═══ KUYRUK SEKMESİ ═══ -->
-    <section class="tab-content" id="section-kuyruk" style="display:none">
+    <section class="tab-content" id="section-kuyruk" role="tabpanel" aria-labelledby="tab-kuyruk" style="display:none">
       <div class="section-header">
-        <h3>İndirme Kuyruğu</h3>
-        <button class="btn-danger btn-sm" onclick="clearDone()">✓ Bitti olanları temizle</button>
+        <div class="section-title-wrap">
+          <h3>İndirme Kuyruğu</h3>
+          <span class="section-sub-badge" id="queue-count-sub">0 indirme</span>
+        </div>
+        <div class="section-header-actions">
+          <button type="button" class="btn-secondary btn-sm" id="btn-retry-failed" onclick="retryFailedJobs()" title="Hata veren tüm indirmeleri yeniden başlat">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            <span>Hatalıları Tekrar Dene</span>
+          </button>
+          <button type="button" class="btn-secondary btn-sm" onclick="clearDone()">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <span>Bitti olanları temizle</span>
+          </button>
+          <button type="button" class="btn-danger btn-sm" onclick="clearAllQueue()" title="Kuyruktaki tüm indirmeleri temizle">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Tümünü Temizle</span>
+          </button>
+        </div>
       </div>
-      <div id="queue-list">
+      <div id="queue-list" role="list">
         <p class="empty-msg">Kuyruk boş.<br>İndir sekmesinden ekleyin.</p>
       </div>
     </section>
 
     <!-- ═══ GEÇMİŞ SEKMESİ ═══ -->
-    <section class="tab-content" id="section-gecmis" style="display:none">
+    <section class="tab-content" id="section-gecmis" role="tabpanel" aria-labelledby="tab-gecmis" style="display:none">
       <div class="section-header">
-        <h3>İndirme Geçmişi</h3>
-        <button class="btn-danger btn-sm" onclick="clearHistory()">🗑 Tümünü Temizle</button>
+        <div class="section-title-wrap">
+          <h3>İndirme Geçmişi</h3>
+          <span class="section-sub-badge" id="history-count-sub">Tamamlananlar</span>
+        </div>
+        <div class="section-header-actions">
+          <button type="button" class="btn-secondary btn-sm" onclick="openDownloadDir()" title="İndirilen dosyaların bulunduğu klasörü aç">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>Klasörü Aç</span>
+          </button>
+          <button type="button" class="btn-danger btn-sm" onclick="clearHistory()">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Tümünü Temizle</span>
+          </button>
+        </div>
       </div>
-      <div id="history-list">
+      <div id="history-list" role="list">
         <p class="empty-msg">Henüz indirme yapılmadı.</p>
       </div>
     </section>
 
-  </div><!-- /main-panel -->
+    <!-- ══ BİLDİRİM TOAST ALANI ════════════════════════════ -->
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  </main><!-- /main-panel -->
 </div><!-- /layout -->
 
 <script>
-  // ── Tema Sistemi ───────────────────────────────────────
+  // ── Tema Sistemi (beUI Gliding Indicator) ──────────────
   function setTheme(t) {
     document.documentElement.setAttribute('data-theme', t);
     localStorage.setItem('vd-theme', t);
     document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById('theme-' + t).classList.add('active');
+    const activeBtn = document.getElementById('theme-' + t);
+    if (activeBtn) activeBtn.classList.add('active');
+
+    // Glider animasyonu
+    const glider = document.getElementById('theme-pill-glider');
+    if (glider && activeBtn && activeBtn.parentElement) {
+      const isMobile = window.innerWidth <= 768;
+      if (isMobile) {
+        glider.style.transform = `translateX(${activeBtn.offsetLeft}px)`;
+        glider.style.top = '3px';
+        glider.style.left = '0';
+        glider.style.width = `${activeBtn.offsetWidth}px`;
+        glider.style.height = `${activeBtn.offsetHeight}px`;
+      } else {
+        glider.style.transform = `translateY(${activeBtn.offsetTop}px)`;
+        glider.style.left = '3px';
+        glider.style.top = '0';
+        glider.style.width = 'calc(100% - 6px)';
+        glider.style.height = `${activeBtn.offsetHeight}px`;
+      }
+      glider.style.opacity = '1';
+    }
   }
-  (function() { setTheme(localStorage.getItem('vd-theme') || 'dark'); })();
+  (function() {
+    const saved = localStorage.getItem('vd-theme') || 'dark';
+    setTheme(saved);
+    window.addEventListener('DOMContentLoaded', () => setTheme(saved));
+    window.addEventListener('resize', () => {
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      setTheme(cur);
+    });
+  })();
+
+  // ── Hata Panoya Kopyalama Yardımcısı ────────────────────
+  function copyErrorToClipboard(elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const cleanText = el.textContent.replace(/^❌\s*/, '').trim();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(cleanText).then(() => {
+        if (typeof showToast === 'function') {
+          showToast('Hata ayrıntısı panoya kopyalandı.', 'success');
+        } else {
+          const btn = document.getElementById(elementId === 'error-msg' ? 'btn-copy-error' : 'btn-copy-error-thumb');
+          if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = '✓ Kopyalandı';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+          }
+        }
+      }).catch(() => {});
+    }
+  }
 </script>
 <script src="app.js"></script>
 </body>

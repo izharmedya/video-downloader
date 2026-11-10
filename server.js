@@ -1,9 +1,43 @@
 const express = require('express');
-const { spawn, execSync, execFileSync } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
+
+// ── PATH ve Çevre Değişkeni Yönetimi ────────────────────────
+function getAugmentedPath() {
+  const existing = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const preferred = [
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    path.join(os.homedir(), '.local/bin'),
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin'
+  ];
+  const combined = [];
+  for (const p of [...preferred, ...existing]) {
+    if (!combined.includes(p) && fs.existsSync(p)) {
+      combined.push(p);
+    }
+  }
+  return combined.join(path.delimiter);
+}
+
+// Global process.env.PATH'i başlatma anında güçlendir
+process.env.PATH = getAugmentedPath();
+
+function getAugmentedEnv(extraEnv = {}) {
+  return {
+    ...process.env,
+    PATH: getAugmentedPath(),
+    ...extraEnv
+  };
+}
 
 const app = express();
 app.set('trust proxy', true);
@@ -26,7 +60,7 @@ let downloadDir = path.resolve(process.env.DOWNLOADS_DIR || path.join(__dirname,
 const HISTORY_FILE = path.join(downloadDir, 'history.json');
 function getDownloadDir() { return downloadDir; }
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || '2', 10);
-const DEFAULT_VIDEO_FORMAT = 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+const DEFAULT_VIDEO_FORMAT = 'bestvideo+bestaudio/best';
 const YOUTUBE_CLIENTS = process.env.YOUTUBE_CLIENTS || 'web_embedded,web_safari,android_vr,android,ios';
 
 // yt-dlp'nin YouTube yüksek kalite akışlarını çözebilmesi için bir JS runtime
@@ -68,47 +102,156 @@ const YTDLP_JS_ARGS = YTDLP_JS_RUNTIME
   : [];
 
 // YouTube yüksek çözünürlükleri çoğunlukla WebM/VP9/AV1 olarak sunar.
-// Format seçerken MP4/M4A ile sınırlamak, mevcut düşük çözünürlüklü MP4
-// akışını seçip daha yüksek video akışlarını görmezden gelmesine neden olur.
+// Format seçerken MP4/M4A ile sınırlamadan en yüksek çözünürlüğü seçiyoruz.
 function videoFormatForHeight(height) {
   const maxHeight = Number.isFinite(height) && height > 0 ? Math.round(height) : null;
   return maxHeight
-    ? `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]/bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]`
+    ? `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
     : DEFAULT_VIDEO_FORMAT;
 }
 
-// ── Binary Yolları ─────────────────────────────────────────
-// 1) env ile belirtilmişse onu kullan
-// 2) macOS'ta eski kurulum yolunu dene
-// 3) PATH'teki (yt-dlp/ffmpeg) ikili dosyaları kullan
-function resolveBinary(envKey, fallbacks, legacyPath) {
-  if (process.env[envKey]) return process.env[envKey];
-  if (legacyPath && fs.existsSync(legacyPath)) return legacyPath;
-  return fallbacks[0];
+// ── Binary Yolları ve Çalıştırılabilirlik Doğrulaması ───────
+const BINARY_CACHE_FILE = path.join(os.tmpdir(), '.vd-binary-cache.json');
+let binaryCache = null;
+
+function loadBinaryCache() {
+  if (binaryCache !== null) return binaryCache;
+  if (process.env.NO_BINARY_CACHE === '1' || process.env.DISABLE_BINARY_CACHE === '1') {
+    binaryCache = {};
+    return binaryCache;
+  }
+  try {
+    if (fs.existsSync(BINARY_CACHE_FILE)) {
+      binaryCache = JSON.parse(fs.readFileSync(BINARY_CACHE_FILE, 'utf8'));
+    } else {
+      binaryCache = {};
+    }
+  } catch {
+    binaryCache = {};
+  }
+  return binaryCache;
 }
-const YTDLP_PATH  = resolveBinary('YTDLP_PATH',  ['yt-dlp', 'ytdlp'], '/Users/izharmedya/.gemini/antigravity/bin/yt-dlp');
-const FFMPEG_PATH = resolveBinary('FFMPEG_PATH', ['ffmpeg'], '/Users/izharmedya/.gemini/antigravity/bin/ffmpeg');
+
+function saveBinaryCache() {
+  if (process.env.NO_BINARY_CACHE === '1' || process.env.DISABLE_BINARY_CACHE === '1') return;
+  try {
+    fs.writeFileSync(BINARY_CACHE_FILE, JSON.stringify(binaryCache || {}), 'utf8');
+  } catch {}
+}
+
+function isExecutableBinary(candidate) {
+  if (!candidate || typeof candidate !== 'string') return false;
+  const isPath = candidate.includes('/') || candidate.includes('\\');
+  if (isPath && !fs.existsSync(candidate)) return false;
+
+  let fileStat = null;
+  if (isPath) {
+    try {
+      fileStat = fs.statSync(candidate);
+      if (!fileStat.isFile()) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Fast-path: Check verified cache
+  if (fileStat) {
+    const cache = loadBinaryCache();
+    const entry = cache[candidate];
+    if (entry && entry.mtimeMs === fileStat.mtimeMs && entry.size === fileStat.size && entry.valid === true) {
+      return true;
+    }
+  }
+
+  const base = path.basename(candidate).toLowerCase();
+  const flags = (base.includes('ffmpeg') || base.includes('ffprobe'))
+    ? ['-version', '--version']
+    : ['--version', '-version'];
+
+  for (const flag of flags) {
+    try {
+      execFileSync(candidate, [flag], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 4000,
+        env: getAugmentedEnv()
+      });
+      if (fileStat) {
+        const cache = loadBinaryCache();
+        cache[candidate] = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, valid: true };
+        saveBinaryCache();
+      }
+      return true;
+    } catch (e) {
+      if (
+        e.code === 'ENOENT' ||
+        e.code === 'EACCES' ||
+        (e.message && (e.message.includes('system error -86') || e.message.includes('bad CPU type')))
+      ) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+function resolveExecutableBinary(envKey, candidates = [], preferredPaths = []) {
+  const cList = Array.isArray(candidates) ? candidates : (candidates ? [candidates] : []);
+  const pList = Array.isArray(preferredPaths) ? preferredPaths : (preferredPaths ? [preferredPaths] : []);
+
+  const toTest = [];
+  if (process.env[envKey]) toTest.push(process.env[envKey]);
+  toTest.push(...pList, ...cList);
+
+  for (const raw of toTest) {
+    if (!raw) continue;
+    let resolved = raw;
+    if (!raw.includes('/') && !raw.includes('\\')) {
+      const paths = getAugmentedPath().split(path.delimiter);
+      for (const d of paths) {
+        const full = path.join(d, raw);
+        try {
+          if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+            resolved = full;
+            break;
+          }
+        } catch {}
+      }
+    }
+    if (isExecutableBinary(resolved)) {
+      return resolved;
+    }
+  }
+  return process.env[envKey] || (pList[0] || cList[0] || null);
+}
+
+const YTDLP_PATH  = resolveExecutableBinary('YTDLP_PATH',  ['yt-dlp', 'ytdlp'], [
+  '/opt/homebrew/bin/yt-dlp',
+  '/usr/local/bin/yt-dlp',
+  '/usr/bin/yt-dlp',
+  '/Users/izharmedya/.gemini/antigravity/bin/yt-dlp'
+]);
+const FFMPEG_PATH = resolveExecutableBinary('FFMPEG_PATH', ['ffmpeg'], [
+  '/opt/homebrew/bin/ffmpeg',
+  '/usr/local/bin/ffmpeg',
+  '/usr/bin/ffmpeg',
+  '/Users/izharmedya/.gemini/antigravity/bin/ffmpeg'
+]);
+const FFPROBE_PATH = resolveExecutableBinary('FFPROBE_PATH', ['ffprobe'], [
+  '/opt/homebrew/bin/ffprobe',
+  '/usr/local/bin/ffprobe',
+  '/usr/bin/ffprobe',
+  '/Users/izharmedya/.gemini/antigravity/bin/ffprobe'
+]);
 
 // ── Şifre / Oturum ─────────────────────────────────────────
-// PASSWORD verilmediyse rastgele üretilir ve konsolda gösterilir.
-const PASSWORD = process.env.PASSWORD || crypto.randomBytes(6).toString('hex');
-const TOKENS = new Set([crypto.randomBytes(32).toString('hex')]);
-const SESSION_DAYS = 7;
-
-function parseCookies(req) {
-  const out = {};
-  (req.headers.cookie || '').split(';').forEach(c => {
-    const i = c.indexOf('=');
-    if (i > -1) out[c.slice(0, i).trim()] = decodeURIComponent(c.slice(i + 1).trim());
-  });
-  return out;
-}
-
+// Giriş gereksinimi kaldırılmıştır. Varsayılan olarak doğrudan açık çalışır.
+// Yalnızca test ortamında açıkça IZ_LOCAL='0' verildiğinde 401 döner.
 function requireAuth(req, res, next) {
-  // IZ_LOCAL=1 (masaüstü uygulaması): sadece 127.0.0.1'e bağlı yerel kullanım — şifre istenmez
-  if (process.env.IZ_LOCAL === '1') return next();
-  if (TOKENS.has(parseCookies(req).vd_token)) return next();
-  res.status(401).json({ error: 'Oturum gerekli' });
+  if (process.env.IZ_LOCAL === '0') {
+    return res.status(401).json({ error: 'Oturum gerekli' });
+  }
+  return next();
 }
 
 // ── Basit Hız Sınırlayıcı (in-memory) ──────────────────────
@@ -137,9 +280,12 @@ function rateLimit(windowMs, max, label) {
 // ── Süreç Takip Kümesi ──────────────────────────────────────
 const to_kill = new Set();
 
-function spawnProcess(binaryPath, args) {
+function spawnProcess(binaryPath, args, options = {}) {
+  const childEnv = getAugmentedEnv(options.env || {});
   const proc = spawn(binaryPath, args, {
-    stdio: ['ignore', 'pipe', 'pipe']  // stdin kapalı — yt-dlp asılmasın
+    stdio: ['ignore', 'pipe', 'pipe'], // stdin kapalı — yt-dlp asılmasın
+    ...options,
+    env: childEnv
   });
   if (proc.pid) {
     to_kill.add(proc);
@@ -185,10 +331,16 @@ function addToHistory(job) {
 // ── Sistem Bildirimi (platforma göre) ───────────────────────
 function notify(title, msg) {
   try {
+    const cleanTitle = String(title || '').replace(/["\\]/g, '\\$&');
+    const cleanMsg = String(msg || '').replace(/["\\]/g, '\\$&');
     if (process.platform === 'darwin') {
-      execSync(`osascript -e 'display notification "${msg}" with title "${title}"'`);
+      execFileSync('osascript', [
+        '-e', `display notification "${cleanMsg}" with title "${cleanTitle}"`
+      ], { timeout: 3000, stdio: 'ignore', env: getAugmentedEnv() });
     } else if (process.platform === 'linux') {
-      execSync(`notify-send "${title}" "${msg}"`, { stdio: 'ignore' });
+      execFileSync('notify-send', [String(title), String(msg)], {
+        timeout: 3000, stdio: 'ignore', env: getAugmentedEnv()
+      });
     }
   } catch {}
 }
@@ -219,11 +371,150 @@ function atempoFilter(speed) {
 
 function isValidDownloadedFile(filename) {
   try {
-    return !!filename && fs.existsSync(filename) && fs.statSync(filename).isFile() &&
-      fs.statSync(filename).size > 1024 * 50;
+    if (!filename || typeof filename !== 'string') return false;
+    if (/\.f\d+\.[^.]+$/i.test(filename)) return false;
+    if (/\.(part|ytdl|temp)$/i.test(filename)) return false;
+    return fs.existsSync(filename) && fs.statSync(filename).isFile() && fs.statSync(filename).size > 1024;
   } catch {
     return false;
   }
+}
+
+function isMoovAtBeginning(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    let offset = 0;
+    let moovOffset = -1;
+    let mdatOffset = -1;
+    const headerBuf = Buffer.alloc(8);
+
+    while (offset < stat.size) {
+      const read = fs.readSync(fd, headerBuf, 0, 8, offset);
+      if (read < 8) break;
+      let size = headerBuf.readUInt32BE(0);
+      const name = headerBuf.toString('ascii', 4, 8);
+
+      if (name === 'moov' && moovOffset === -1) moovOffset = offset;
+      if (name === 'mdat' && mdatOffset === -1) mdatOffset = offset;
+
+      if (moovOffset !== -1 && mdatOffset !== -1) break;
+
+      if (size === 0) {
+        break;
+      }
+      if (size === 1) {
+        const extBuf = Buffer.alloc(8);
+        fs.readSync(fd, extBuf, 0, 8, offset + 8);
+        size = Number(extBuf.readBigUInt64BE(0));
+      }
+      if (size <= 0) break;
+      offset += size;
+    }
+    fs.closeSync(fd);
+    if (moovOffset !== -1 && mdatOffset !== -1) {
+      return moovOffset < mdatOffset;
+    }
+    return moovOffset !== -1;
+  } catch {
+    return false;
+  }
+}
+
+function probeMediaStreams(filePath) {
+  try {
+    const out = execFileSync(FFPROBE_PATH, [
+      '-v', 'error',
+      '-show_entries', 'stream=index,codec_name,codec_type,pix_fmt,profile,level,width,height,r_frame_rate,sample_rate,channels:format=format_name,duration,bit_rate',
+      '-of', 'json',
+      filePath
+    ], { encoding: 'utf8', timeout: 15000, env: getAugmentedEnv() });
+    return JSON.parse(out);
+  } catch {
+    return null;
+  }
+}
+
+function validateMediaStreams(filepath, isAudioOnly) {
+  if (!filepath || typeof filepath !== 'string' || !fs.existsSync(filepath)) {
+    return { valid: false, error: 'Dosya mevcut değil.' };
+  }
+  try {
+    const stat = fs.statSync(filepath);
+    if (!stat.isFile() || stat.size < 1024) {
+      return { valid: false, error: 'Dosya boyutu geçersiz.' };
+    }
+    const info = probeMediaStreams(filepath);
+    if (!info) {
+      return { valid: false, error: 'ffprobe akış doğrulaması başarısız: bilgi alınamadı.' };
+    }
+    const streams = Array.isArray(info.streams) ? info.streams : [];
+    const hasAudio = streams.some(s => s.codec_type === 'audio');
+    const hasVideo = streams.some(s => s.codec_type === 'video');
+
+    if (isAudioOnly) {
+      if (!hasAudio) return { valid: false, error: 'Ses akışı (audio stream) bulunamadı.' };
+    } else {
+      if (!hasVideo) return { valid: false, error: 'Video akışı (video stream) bulunamadı (yalnızca ses indirildi).' };
+    }
+    return { valid: true, streams, format: info.format };
+  } catch (err) {
+    return { valid: false, error: `ffprobe akış doğrulaması başarısız: ${err.message}` };
+  }
+}
+
+function cleanupOrphanedJobFiles(job) {
+  if (!job) return [];
+  const dir = getDownloadDir();
+  const deleted = [];
+  if (job.filename && typeof job.filename === 'string') {
+    try {
+      const resolved = resolveFile(job.filename) || job.filename;
+      if (fs.existsSync(resolved)) {
+        const isFrag = /\.f\d+\.[^.]+$/i.test(resolved) || /\.(part|ytdl|temp)$/i.test(resolved);
+        if (isFrag || job.status === 'cancelled' || job.status === 'error') {
+          fs.unlinkSync(resolved);
+          deleted.push(resolved);
+        }
+      }
+      for (const ext of ['.part', '.ytdl', '.temp']) {
+        const p = `${resolved}${ext}`;
+        if (fs.existsSync(p)) { fs.unlinkSync(p); deleted.push(p); }
+      }
+    } catch {}
+  }
+  try {
+    if (!fs.existsSync(dir)) return deleted;
+    const prefixes = [];
+    if (job.custom_name) prefixes.push(job.custom_name.normalize('NFC'));
+    if (job.title) prefixes.push(job.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40).normalize('NFC'));
+    if (job.filename) {
+      const base = path.basename(job.filename).replace(/\.f\d+\.[^.]+$/, '').replace(/\.[^.]+$/, '').normalize('NFC');
+      if (base) prefixes.push(base);
+    }
+    if (job.url) {
+      try {
+        const urlObj = new URL(job.url);
+        const urlBase = path.basename(urlObj.pathname).replace(/\.[^.]+$/, '').normalize('NFC');
+        if (urlBase) prefixes.push(urlBase);
+      } catch {}
+    }
+    const isFrag = name => /\.(part|ytdl|temp)$/i.test(name) || /\.f\d+\.[^.]+$/i.test(name) || (job.id && name.includes(job.id));
+    const activeOtherJobs = queue.some(j => j.id !== job.id && (j.status === 'downloading' || j.status === 'processing'));
+
+    for (const file of fs.readdirSync(dir)) {
+      const fNfc = file.normalize('NFC');
+      if (!isFrag(fNfc)) continue;
+      const matchesJob = prefixes.some(p => p && fNfc.startsWith(p)) ||
+                         (job.id && fNfc.includes(job.id)) ||
+                         (!activeOtherJobs && (job.status === 'cancelled' || job.status === 'error'));
+      if (matchesJob) {
+        const fp = path.join(dir, file);
+        try { if (fs.existsSync(fp) && fs.statSync(fp).isFile()) { fs.unlinkSync(fp); deleted.push(fp); } } catch {}
+      }
+    }
+  } catch {}
+  return deleted;
 }
 
 function finishJob(job) {
@@ -242,8 +533,180 @@ function failJob(job, message) {
   job.status = 'error';
   job.error = message || job.error || 'İşlem başarısız.';
   job._proc = null;
+  cleanupOrphanedJobFiles(job);
   notify('Video İndirici', `❌ ${job.title || 'Video'} indirilemedi.`);
   processQueue();
+}
+
+function parseFps(fpsStr) {
+  if (!fpsStr || typeof fpsStr !== 'string') return 30;
+  const parts = fpsStr.split('/');
+  if (parts.length === 2) {
+    const num = Number(parts[0]);
+    const den = Number(parts[1]);
+    if (num > 0 && den > 0) return num / den;
+  }
+  const val = Number(fpsStr);
+  return Number.isFinite(val) && val > 0 ? val : 30;
+}
+
+let _hasVideoToolbox = null;
+function hasVideoToolbox() {
+  if (_hasVideoToolbox !== null) return _hasVideoToolbox;
+  if (process.platform !== 'darwin') return (_hasVideoToolbox = false);
+  try {
+    const out = execFileSync(FFMPEG_PATH, ['-encoders'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+      env: getAugmentedEnv()
+    });
+    return (_hasVideoToolbox = out.includes('h264_videotoolbox'));
+  } catch {
+    return (_hasVideoToolbox = false);
+  }
+}
+
+function normalizeDownloadedVideo(job, done) {
+  const source = job.filename;
+  if (!isValidDownloadedFile(source)) {
+    return done(new Error('İşlenecek video dosyası bulunamadı.'));
+  }
+
+  const info = probeMediaStreams(source);
+  if (!info || !Array.isArray(info.streams)) {
+    return done(new Error('Video dosyası doğrulanamadı.'));
+  }
+
+  const vStream = info.streams.find(s => s.codec_type === 'video');
+  const aStream = info.streams.find(s => s.codec_type === 'audio');
+
+  if (!vStream) {
+    return done(new Error('İndirilen dosyada video akışı bulunamadı.'));
+  }
+
+  const isH264 = vStream.codec_name === 'h264';
+  const isYuv420p = vStream.pix_fmt === 'yuv420p';
+  const isAAC = aStream && aStream.codec_name === 'aac';
+  const isSampleRate48k = aStream && parseInt(aStream.sample_rate, 10) === 48000;
+  const isFastStart = isMoovAtBeginning(source);
+
+  // Fast Path: Already H.264 + yuv420p + AAC 48k + faststart moov placement
+  if (isH264 && isYuv420p && (!aStream || (isAAC && isSampleRate48k)) && isFastStart) {
+    return done(null);
+  }
+
+  const baseName = path.basename(source, path.extname(source));
+  const targetMp4 = path.join(path.dirname(source), `${baseName}.mp4`);
+  const temp = path.join(path.dirname(source), `.${baseName}.norm-${job.id}.mp4`);
+  const cleanupTemp = () => { try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch {} };
+
+  const finalizeOutput = () => {
+    try {
+      fs.renameSync(temp, targetMp4);
+      if (source !== targetMp4 && fs.existsSync(source)) {
+        try { fs.unlinkSync(source); } catch {}
+      }
+      job.filename = targetMp4;
+      done(null);
+    } catch (e) {
+      cleanupTemp();
+      done(e);
+    }
+  };
+
+  let args = ['-y', '-i', source, '-map', '0:v:0'];
+  if (aStream) args.push('-map', '0:a:0');
+
+  if (isH264 && isYuv420p) {
+    // Stream-copy fast path
+    args.push('-c:v', 'copy');
+    if (!aStream) {
+      // no audio
+    } else if (isAAC && isSampleRate48k) {
+      args.push('-c:a', 'copy');
+    } else {
+      args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
+    }
+  } else {
+    // Transcode path: VP9 / AV1 to H.264 High 5.1/5.2 (yuv420p)
+    const fps = parseFps(vStream.r_frame_rate);
+    const level = (vStream.height >= 2160 && fps > 30) ? '5.2' : '5.1';
+
+    if (hasVideoToolbox()) {
+      const bitrate = vStream.height >= 2160 ? '28M' : (vStream.height >= 1440 ? '16M' : '8M');
+      args.push(
+        '-c:v', 'h264_videotoolbox',
+        '-b:v', bitrate,
+        '-pix_fmt', 'yuv420p',
+        '-profile:v', 'high',
+        '-level', level
+      );
+    } else {
+      args.push(
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '18',
+        '-pix_fmt', 'yuv420p',
+        '-profile:v', 'high',
+        '-level', level
+      );
+    }
+
+    if (aStream) {
+      args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
+    }
+  }
+
+  args.push('-movflags', '+faststart', temp);
+
+  const proc = spawnProcess(FFMPEG_PATH, args);
+  job._proc = proc;
+  job.norm_pid = proc.pid;
+  let stderr = '';
+
+  proc.stderr.on('data', data => {
+    stderr = `${stderr}\n${data.toString()}`.slice(-4000);
+  });
+  proc.on('error', err => {
+    job.norm_pid = null;
+    cleanupTemp();
+    done(err);
+  });
+  proc.on('close', code => {
+    job.norm_pid = null;
+    if (job.status === 'cancelled') {
+      cleanupTemp();
+      return;
+    }
+    if (code !== 0 || !isValidDownloadedFile(temp)) {
+      cleanupTemp();
+      // If videotoolbox failed, try libx264 fallback
+      if (args.includes('h264_videotoolbox')) {
+        const fallbackArgs = args.map(a => a === 'h264_videotoolbox' ? 'libx264' : a)
+          .filter(a => !/^\d+M$/.test(a));
+        const vIdx = fallbackArgs.indexOf('libx264');
+        fallbackArgs.splice(vIdx + 1, 0, '-preset', 'veryfast', '-crf', '18');
+        const retryProc = spawnProcess(FFMPEG_PATH, fallbackArgs);
+        job._proc = retryProc;
+        let retryErr = '';
+        retryProc.stderr.on('data', d => { retryErr = `${retryErr}\n${d.toString()}`.slice(-4000); });
+        retryProc.on('close', rCode => {
+          if (rCode !== 0 || !isValidDownloadedFile(temp)) {
+            cleanupTemp();
+            done(new Error(retryErr.trim().split('\n').slice(-1)[0] || 'Video dönüştürme başarısız oldu.'));
+            return;
+          }
+          finalizeOutput();
+        });
+        return;
+      }
+      done(new Error(stderr.trim().split('\n').slice(-1)[0] || 'Video dönüştürme başarısız oldu.'));
+      return;
+    }
+
+    finalizeOutput();
+  });
 }
 
 function speedUpDownloadedFile(job, done) {
@@ -252,18 +715,28 @@ function speedUpDownloadedFile(job, done) {
   if (!isValidDownloadedFile(job.filename)) return done(new Error('Hızlandırılacak dosya bulunamadı.'));
 
   const source = job.filename;
-  const ext = path.extname(source) || (job.audio_only ? '.mp3' : '.mp4');
-  const temp = path.join(path.dirname(source), `.${path.basename(source, ext)}.speed-${job.id}${ext}`);
-  const args = ['-y', '-i', source, '-map_metadata', '0'];
+  const targetExt = job.audio_only ? '.mp3' : '.mp4';
+  const baseName = path.basename(source, path.extname(source));
+  const targetFile = path.join(path.dirname(source), `${baseName}${targetExt}`);
+  const temp = path.join(path.dirname(source), `.${baseName}.speed-${job.id}${targetExt}`);
+  const args = ['-y', '-i', source];
 
   if (job.audio_only) {
-    args.push('-filter:a', atempoFilter(speed), '-c:a', 'libmp3lame', '-q:a', '0');
+    args.push(
+      '-filter:a', atempoFilter(speed),
+      '-c:a', 'libmp3lame',
+      '-b:a', '320k',
+      '-ar', '44100',
+      '-id3v2_version', '3',
+      '-write_id3v1', '1'
+    );
   } else {
     args.push(
       '-map', '0:v:0', '-map', '0:a?',
       '-vf', `setpts=PTS/${speed}`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-      '-c:a', 'aac', '-b:a', '192k',
+      '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-level', '5.1',
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
       '-filter:a', atempoFilter(speed),
       '-movflags', '+faststart'
     );
@@ -292,22 +765,177 @@ function speedUpDownloadedFile(job, done) {
     }
     if (code !== 0 || !isValidDownloadedFile(temp)) {
       cleanupTemp();
-      done(new Error(stderr.trim().split('\n').slice(-1)[0] || 'Video hızı değiştirilemedi.'));
+      done(new Error(stderr.trim().split('\n').slice(-1)[0] || 'Medya hızı değiştirilemedi.'));
       return;
     }
 
-    const backup = `${source}.before-speed-${job.id}`;
     try {
-      fs.renameSync(source, backup);
-      fs.renameSync(temp, source);
-      fs.unlinkSync(backup);
+      fs.renameSync(temp, targetFile);
+      if (source !== targetFile && fs.existsSync(source)) {
+        try { fs.unlinkSync(source); } catch {}
+      }
+      job.filename = targetFile;
       done(null);
     } catch (err) {
       cleanupTemp();
-      try {
-        if (!fs.existsSync(source) && fs.existsSync(backup)) fs.renameSync(backup, source);
-      } catch {}
       done(err);
+    }
+  });
+}
+
+function isYouTubeUrl(inputUrl) {
+  if (!inputUrl || typeof inputUrl !== 'string') return false;
+  try {
+    const parsed = new URL(inputUrl);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'youtu.be' ||
+      host.endsWith('.youtu.be') ||
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'youtube-nocookie.com' ||
+      host.endsWith('.youtube-nocookie.com')
+    );
+  } catch {
+    return /(?:^|[\/.])(?:youtu\.be|youtube\.com|youtube-nocookie\.com)(?:$|[\/:?#])/i.test(inputUrl);
+  }
+}
+
+function isKickUrl(inputUrl) {
+  if (!inputUrl || typeof inputUrl !== 'string') return false;
+  try {
+    const parsed = new URL(inputUrl);
+    const host = parsed.hostname.toLowerCase();
+    return host === 'kick.com' || host.endsWith('.kick.com');
+  } catch {
+    return /(?:^|[\/.])kick\.com(?:$|[\/:?#])/i.test(inputUrl);
+  }
+}
+
+function normalizeMediaUrl(inputUrl) {
+  if (!inputUrl || typeof inputUrl !== 'string') return inputUrl;
+  const trimmed = inputUrl.trim();
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+
+    // ── Kick URL Normalizasyonu ────────────────────────────────
+    if (host === 'kick.com' || host.endsWith('.kick.com')) {
+      const pathname = parsed.pathname;
+      const searchParams = parsed.searchParams;
+
+      // 1. ?video=UUID (örn: https://kick.com/xqc?video=UUID veya https://kick.com?video=UUID)
+      const videoParam = searchParams.get('video');
+      if (videoParam) {
+        const cleanPath = pathname.replace(/^\/+|\/+$/g, '');
+        const channel = (cleanPath && !['video', 'videos', 'clip', 'clips'].includes(cleanPath.toLowerCase())) ? cleanPath : '_';
+        return `https://kick.com/${channel}/videos/${videoParam}`;
+      }
+
+      // 2. ?clip=clip_ID (örn: https://kick.com/xqc?clip=clip_ID)
+      const clipParam = searchParams.get('clip');
+      if (clipParam) {
+        const cleanPath = pathname.replace(/^\/+|\/+$/g, '');
+        const channel = (cleanPath && !['video', 'videos', 'clip', 'clips'].includes(cleanPath.toLowerCase())) ? cleanPath : '_';
+        return `https://kick.com/${channel}/clips/${clipParam}`;
+      }
+
+      // 3. /video/UUID veya /videos/UUID (kanalsız doğrudan video linki)
+      const rootVideoMatch = pathname.match(/^\/(?:video|videos)\/([a-f0-9-]+)/i);
+      if (rootVideoMatch) {
+        return `https://kick.com/_/videos/${rootVideoMatch[1]}`;
+      }
+
+      // 4. /{channel}/video/UUID (tekil 'video' kullanımı)
+      const channelVideoMatch = pathname.match(/^\/([^/]+)\/video\/([a-f0-9-]+)/i);
+      if (channelVideoMatch && !['video', 'videos', 'clip', 'clips'].includes(channelVideoMatch[1].toLowerCase())) {
+        return `https://kick.com/${channelVideoMatch[1]}/videos/${channelVideoMatch[2]}`;
+      }
+
+      // 5. /clip/clip_ID veya /clips/clip_ID (kanalsız klip linki)
+      const rootClipMatch = pathname.match(/^\/(?:clip|clips)\/(clip_[a-zA-Z0-9_-]+)/i);
+      if (rootClipMatch) {
+        return `https://kick.com/_/clips/${rootClipMatch[1]}`;
+      }
+
+      // 6. /{channel}/clip/clip_ID (tekil 'clip' kullanımı)
+      const channelClipMatch = pathname.match(/^\/([^/]+)\/clip\/(clip_[a-zA-Z0-9_-]+)/i);
+      if (channelClipMatch && !['video', 'videos', 'clip', 'clips'].includes(channelClipMatch[1].toLowerCase())) {
+        return `https://kick.com/${channelClipMatch[1]}/clips/${channelClipMatch[2]}`;
+      }
+    }
+
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function parseIso8601Duration(dur) {
+  if (!dur || typeof dur !== 'string') return null;
+  const m = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/i);
+  if (!m) return null;
+  const hours = parseInt(m[1] || '0', 10);
+  const minutes = parseInt(m[2] || '0', 10);
+  const seconds = parseInt(m[3] || '0', 10);
+  return (hours * 3600) + (minutes * 60) + seconds;
+}
+
+function resolveKickMedia(url) {
+  return new Promise((resolve) => {
+    try {
+      if (!url || typeof url !== 'string') return resolve(null);
+      const parsed = new URL(url);
+      if (!parsed.hostname.toLowerCase().includes('kick.com')) {
+        return resolve(null);
+      }
+
+      const https = require('https');
+      const req = https.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
+        },
+        timeout: 8000
+      }, res => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return resolve(resolveKickMedia(res.headers.location));
+        }
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const matches = [...data.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/gs)];
+            for (const match of matches) {
+              try {
+                const parsedJson = JSON.parse(match[1]);
+                const graph = parsedJson['@graph'] || [parsedJson];
+                const videoObj = graph.find(item => item && item['@type'] === 'VideoObject');
+                if (videoObj && videoObj.contentUrl) {
+                  const channelMatch = parsed.pathname.match(/^\/([^/]+)/);
+                  const channelSlug = (channelMatch && !['video', 'videos', 'clip', 'clips'].includes(channelMatch[1].toLowerCase()))
+                    ? channelMatch[1]
+                    : null;
+                  return resolve({
+                    title: videoObj.name || null,
+                    streamUrl: videoObj.contentUrl,
+                    thumbnail: Array.isArray(videoObj.thumbnailUrl) ? videoObj.thumbnailUrl[0] : (videoObj.thumbnailUrl || null),
+                    duration: parseIso8601Duration(videoObj.duration),
+                    uploader: videoObj.creator?.name || channelSlug || null
+                  });
+                }
+              } catch {}
+            }
+          } catch {}
+          resolve(null);
+        });
+      });
+
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch {
+      resolve(null);
     }
   });
 }
@@ -315,14 +943,18 @@ function speedUpDownloadedFile(job, done) {
 function startJob(job) {
   job.status = 'downloading';
   job.progress = 0;
+  job.url = normalizeMediaUrl(job.url);
 
   const isAudio = job.audio_only === true;
   job.playback_speed = normalizePlaybackSpeed(job.playback_speed);
   const customStem = sanitizeFileStem(job.custom_name);
-  const outputTemplate = customStem
+  const titleStem = sanitizeFileStem(job.title && job.title !== 'Video' && job.title !== 'master' ? job.title : '');
+  const preferredStem = customStem || titleStem;
+
+  const outputTemplate = preferredStem
     ? path.join(getDownloadDir(), job.is_playlist
-      ? `${customStem} - %(playlist_index)s - %(title)s.%(ext)s`
-      : `${customStem}.%(ext)s`)
+      ? `${preferredStem} - %(playlist_index)s - %(title)s.%(ext)s`
+      : `${preferredStem}.%(ext)s`)
     : path.join(getDownloadDir(), '%(title)s.%(ext)s');
 
   let args = [
@@ -330,12 +962,14 @@ function startJob(job) {
     '--no-check-certificates',
     '--geo-bypass',
     ...YTDLP_JS_ARGS,
-    // Web istemcisi yüksek çözünürlükleri, mobil istemciler de erişilebilirliği sağlar.
-    '--extractor-args', `youtube:player_client=${YOUTUBE_CLIENTS}`,
     '--ffmpeg-location', FFMPEG_PATH,
     '-o', outputTemplate,
     '--newline',
   ];
+
+  if (isYouTubeUrl(job.url)) {
+    args.push('--extractor-args', `youtube:player_client=${YOUTUBE_CLIENTS}`);
+  }
 
   // Playlist
   if (job.is_playlist) {
@@ -345,9 +979,12 @@ function startJob(job) {
   }
 
   // Trim
-  if (job.trim_start || job.trim_end) {
-    const s = job.trim_start || '0';
-    const e = job.trim_end   || '99:99:99';
+  const sanitizeTimestamp = v => typeof v === 'string' ? v.trim().replace(/[^0-9:.]/g, '') : '';
+  const trimStart = sanitizeTimestamp(job.trim_start);
+  const trimEnd   = sanitizeTimestamp(job.trim_end);
+  if (trimStart || trimEnd) {
+    const s = trimStart || '0';
+    const e = trimEnd   || 'inf';
     args.push('--download-sections', `*${s}-${e}`);
     args.push('--force-keyframes-at-cuts');
   }
@@ -360,15 +997,23 @@ function startJob(job) {
   // Format
   if (isAudio) {
     args.push('-f', 'bestaudio/best');
-    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
+    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '320k');
+    args.push(
+      '--ppa',
+      'ExtractAudio+ffmpeg:-ar 44100 -ac 2 -id3v2_version 3 -write_id3v1 1 -map_metadata -1'
+    );
   } else {
-    // Container yerine çözünürlüğü önceliklendiriyoruz. --merge-output-format
-    // çıktıyı MP4 yapacağı için WebM/AV1 gibi yüksek kalite akışları da kullanılabilir.
-    args.push('-f', job.format_id || DEFAULT_VIDEO_FORMAT);
+    const reqFormat = job.format_id || DEFAULT_VIDEO_FORMAT;
+    const isSelectorExpr = /bestvideo|best\[/i.test(reqFormat);
+    const effectiveFormat = (reqFormat.endsWith('/best') || reqFormat === 'best' || !isSelectorExpr)
+      ? reqFormat
+      : `${reqFormat}/best`;
+    args.push('-f', effectiveFormat);
     args.push('--merge-output-format', 'mp4');
+    args.push('--format-sort', 'res,vcodec:h264,acodec:aac');
   }
 
-  args.push(job.url);
+  args.push(job.stream_url || job.url);
 
   const proc = spawnProcess(YTDLP_PATH, args);
   job.pid = proc.pid;
@@ -400,6 +1045,10 @@ function startJob(job) {
     if (merge) job.filename = merge[1].trim();
     const audio = line.match(/\[ExtractAudio\] Destination: (.+)/);
     if (audio) job.filename = audio[1].trim();
+    const convert = line.match(/\[(?:VideoConvertor|VideoRemuxer)\] Destination: (.+)/);
+    if (convert) job.filename = convert[1].trim();
+    const already = line.match(/\[download\] (.+) has already been downloaded/);
+    if (already) job.filename = already[1].trim();
   });
 
   proc.stderr.on('data', (data) => {
@@ -408,25 +1057,68 @@ function startJob(job) {
   });
 
   proc.on('close', (code) => {
-    if (job.status === 'cancelled' || job.status === 'error') return;
+    if (job.status === 'cancelled' || job.status === 'error') {
+      cleanupOrphanedJobFiles(job);
+      return;
+    }
 
-    // ECONNRESET / kesinti kurtarma kontrolü
-    const fileExistsAndValid = isValidDownloadedFile(job.filename);
+    if (code !== 0) {
+      cleanupOrphanedJobFiles(job);
+      return failJob(job, job.error || `İndirme işlemi başarısız oldu (çıkış kodu: ${code}).`);
+    }
 
-    if (code === 0 || fileExistsAndValid) {
+    if (job.filename && /\.f\d+\.[^.]+$/i.test(job.filename)) {
+      const targetExt = isAudio ? '.mp3' : '.mp4';
+      const expectedTarget = job.filename.replace(/\.f\d+\.[^.]+$/, targetExt);
+      if (fs.existsSync(expectedTarget)) {
+        job.filename = expectedTarget;
+      } else {
+        cleanupOrphanedJobFiles(job);
+        return failJob(job, 'İndirme tamamlanamadı: Birleştirilmiş medya dosyası üretilemedi.');
+      }
+    }
+
+    if (!isValidDownloadedFile(job.filename)) {
+      cleanupOrphanedJobFiles(job);
+      return failJob(job, 'İndirilen dosya bulunamadı veya boyutu geçersiz.');
+    }
+
+    const finalize = () => {
+      const validation = validateMediaStreams(job.filename, isAudio);
+      if (!validation.valid) {
+        cleanupOrphanedJobFiles(job);
+        return failJob(job, `Medya doğrulama hatası: ${validation.error}`);
+      }
+      finishJob(job);
+    };
+
+    job.status = 'processing';
+    job.progress = 99;
+
+    if (isAudio) {
       if (job.playback_speed > 1) {
-        job.status = 'processing';
-        job.progress = 99;
         speedUpDownloadedFile(job, err => {
           if (job.status === 'cancelled') return;
-          if (err) return failJob(job, `2x hızlandırma başarısız: ${err.message}`);
-          finishJob(job);
+          if (err) return failJob(job, `${job.playback_speed}x hızlandırma başarısız: ${err.message}`);
+          finalize();
         });
       } else {
-        finishJob(job);
+        finalize();
       }
     } else {
-      failJob(job);
+      if (job.playback_speed > 1) {
+        speedUpDownloadedFile(job, err => {
+          if (job.status === 'cancelled') return;
+          if (err) return failJob(job, `${job.playback_speed}x hızlandırma başarısız: ${err.message}`);
+          finalize();
+        });
+      } else {
+        normalizeDownloadedVideo(job, err => {
+          if (job.status === 'cancelled') return;
+          if (err) return failJob(job, `Video dönüştürme başarısız: ${err.message}`);
+          finalize();
+        });
+      }
     }
   });
 
@@ -472,25 +1164,10 @@ function sanitizeFileStem(value) {
   return stem || null;
 }
 
-// ── API: Giriş / Çıkış / Oturum ─────────────────────────────
-app.post('/api/login', rateLimit(60 * 1000, 5, 'login'), (req, res) => {
-  const { password } = req.body || {};
-  const ok = typeof password === 'string' &&
-    password.length === PASSWORD.length &&
-    crypto.timingSafeEqual(Buffer.from(password), Buffer.from(PASSWORD));
-  if (!ok) return res.status(401).json({ error: 'Yanlış şifre' });
-
-  const token = [...TOKENS][0];
-  res.setHeader('Set-Cookie', `vd_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}`);
-  res.json({ ok: true });
-});
-
-app.post('/api/logout', (req, res) => {
-  res.setHeader('Set-Cookie', 'vd_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
-  res.json({ ok: true });
-});
-
-app.get('/api/me', requireAuth, (req, res) => res.json({ ok: true }));
+// ── API: Giriş / Çıkış / Oturum (Girişsiz kullanım uyumluluğu) ─────────
+app.post('/api/login', (req, res) => res.json({ ok: true }));
+app.post('/api/logout', (req, res) => res.json({ ok: true }));
+app.get('/api/me', (req, res) => res.json({ ok: true }));
 
 // ── API: Varsayılan Kayıt Klasörü ───────────────────────────
 app.get('/api/default-path', requireAuth, (req, res) => {
@@ -514,7 +1191,9 @@ app.post('/api/download-dir', requireAuth, (req, res) => {
 app.get('/api/pick-folder', requireAuth, (req, res) => {
   try {
     if (process.platform === 'darwin') {
-      const folder = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Video indirme klasörünü seçin:")'`, { encoding: 'utf8' }).trim();
+      const folder = execFileSync('osascript', [
+        '-e', 'POSIX path of (choose folder with prompt "Video indirme klasörünü seçin:")'
+      ], { encoding: 'utf8', timeout: 60000, env: getAugmentedEnv() }).trim();
       if (folder) {
         downloadDir = path.resolve(folder);
         return res.json({ ok: true, path: downloadDir });
@@ -529,9 +1208,14 @@ app.get('/api/pick-folder', requireAuth, (req, res) => {
 // ── API: Klasörü Finder'da Aç ────────────────────────────────
 app.post('/api/open-dir', requireAuth, (req, res) => {
   try {
-    const target = (req.body && req.body.path) || downloadDir;
+    const rawTarget = (req.body && req.body.path) || downloadDir;
+    if (typeof rawTarget !== 'string') return res.status(400).json({ error: 'Geçersiz yol' });
+    const target = path.resolve(rawTarget);
+    if (!fs.existsSync(target)) {
+      return res.status(404).json({ error: 'Klasör bulunamadı' });
+    }
     if (process.platform === 'darwin') {
-      execSync(`open "${target}"`);
+      execFileSync('open', [target], { timeout: 5000, stdio: 'ignore', env: getAugmentedEnv() });
     }
     res.json({ ok: true });
   } catch (e) {
@@ -542,9 +1226,14 @@ app.post('/api/open-dir', requireAuth, (req, res) => {
 // ── API: Dosyayı Finder'da Göster ────────────────────────────
 app.post('/api/show-file', requireAuth, (req, res) => {
   try {
-    const target = req.body && req.body.path;
-    if (target && process.platform === 'darwin') {
-      execSync(`open -R "${target}"`);
+    const rawTarget = req.body && req.body.path;
+    if (!rawTarget || typeof rawTarget !== 'string') return res.status(400).json({ error: 'Dosya yolu gerekli' });
+    const target = path.resolve(rawTarget);
+    if (!fs.existsSync(target)) {
+      return res.status(404).json({ error: 'Dosya bulunamadı' });
+    }
+    if (process.platform === 'darwin') {
+      execFileSync('open', ['-R', target], { timeout: 5000, stdio: 'ignore', env: getAugmentedEnv() });
     }
     res.json({ ok: true });
   } catch (e) {
@@ -556,7 +1245,8 @@ app.post('/api/show-file', requireAuth, (req, res) => {
 // ── API: Video Bilgisi ──────────────────────────────────────
 app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) => {
   let { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL gerekli' });
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL gerekli' });
+  if (/[\r\n\0\t\x00-\x1f]/.test(url)) return res.status(400).json({ error: 'Geçersiz URL' });
 
   url = url.trim();
   if (!/^https?:\/\//i.test(url)) {
@@ -567,7 +1257,9 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
     return res.status(400).json({ error: 'Geçersiz URL' });
   }
 
-  const runYtDlp = (extraArgs = [], timeoutMs = 0) => {
+  url = normalizeMediaUrl(url);
+
+  const runYtDlp = (targetUrl, extraArgs = [], timeoutMs = 0) => {
     return new Promise((resolve) => {
       const args = [
         '--dump-json',
@@ -578,7 +1270,7 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
         '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         ...extraArgs,
       ];
-      args.push(url);
+      args.push(targetUrl);
 
       let done = false;
       const finish = (val) => { if (!done) { done = true; resolve(val); } };
@@ -605,29 +1297,56 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
   (async () => {
     console.log(`[/api/info] İstek alındı: ${url}`);
 
-    // Yavaşlığı önlemek için clientlar 2'li KÜÇÜK gruplar halinde denenir;
-    // istek başına zaman aşımı vardır, takılması engellenir.
-    const attempts = [
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_embedded'],
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_safari'],
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=android_vr'],
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=android'],
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=ios'],
-      ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_creator'],
-      ['--no-playlist', '--extractor-args', 'youtube:player_client=android,ios,web_embedded,web_creator,tv'],
-    ];
+    const isYouTube = isYouTubeUrl(url);
+    const isKick = isKickUrl(url);
+
+    let kickMeta = null;
+    let targetUrl = url;
+    if (isKick) {
+      try {
+        kickMeta = await resolveKickMedia(url);
+        if (kickMeta && kickMeta.streamUrl) {
+          targetUrl = kickMeta.streamUrl;
+          console.log(`[/api/info] Kick stream URL çözüldü: ${targetUrl.slice(0, 80)}...`);
+        }
+      } catch (err) {
+        console.error('[/api/info] Kick resolve hatası:', err);
+      }
+    }
+
+    const attempts = isYouTube
+      ? [
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_embedded'],
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_safari'],
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=android_vr'],
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=android'],
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=ios'],
+          ['--playlist-end', '1', '--extractor-args', 'youtube:player_client=web_creator'],
+          ['--no-playlist', '--extractor-args', 'youtube:player_client=android,ios,web_embedded,web_creator,tv'],
+        ]
+      : isKick
+      ? [
+          ['--playlist-end', '1'],
+          ['--playlist-end', '1', '--impersonate', 'chrome']
+        ]
+      : [
+          ['--playlist-end', '1']
+        ];
+
     const CONCURRENCY = 1;         // paralel istek YouTube'u yavaşlatıyor; teker teker
-    const ATTEMPT_TIMEOUT = 25000; // YouTube fetch'i ~15-18s sürebiliyor; bol süre
+    const ATTEMPT_TIMEOUT = isYouTube ? 25000 : 10000;
     const startTime = Date.now();
     const queue = attempts.slice();
     let active = 0, settled = false;
+    let lastError = '';
     let result = await new Promise((resolve) => {
       const spawnNext = () => {
         while (active < CONCURRENCY && queue.length && !settled) {
           const args = queue.shift();
           active++;
-          runYtDlp(args, ATTEMPT_TIMEOUT).then(r => {
+          runYtDlp(targetUrl, args, ATTEMPT_TIMEOUT).then(r => {
             active--;
+            if (r.err) lastError = r.err;
             const client = args[args.length - 1] || args[args.length - 2];
             console.log(`[/api/info] ${client} => kod:${r.code} stdout:${r.out.length}b err:${r.err.slice(0,80)}`);
             if (!settled && r.code === 0 && r.out.trim()) { settled = true; resolve(r); return; }
@@ -639,14 +1358,22 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
       spawnNext();
     });
     console.log(`[/api/info] tamamlandı (${Date.now() - startTime}ms)${result ? '' : ' — tüm clientlar başarısız'}`);
-    if (!result) result = { code: -1, out: '', err: 'Tüm clientlar başarısız.' };
+    if (!result) result = { code: -1, out: '', err: lastError || 'Tüm clientlar başarısız.' };
 
     if (result.code !== 0 || !result.out.trim()) {
       console.error(`[/api/info HATA] ${result.err.slice(0, 400)}`);
+      let errorMsg = 'Video bilgileri alınamadı. Geçerli ve erişilebilir bir link giriniz.';
+      if (isBotError(result)) {
+        errorMsg = 'YouTube bu videoyu indirmeye izin vermiyor. Farklı bir link veya platform deneyin.';
+      } else if (result.err && result.err.includes('The channel is not currently live')) {
+        errorMsg = 'Bu Kick kanalı şu anda canlı yayında değil. Canlı bir yayın veya geçmiş bir yayın (VOD) / klip linki giriniz.';
+      } else if (result.err && (result.err.includes('Unable to download JSON') || result.err.includes('HTTP Error 404'))) {
+        errorMsg = isKick
+          ? 'Kick videosu veya yayını bulunamadı. Linkin doğruluğunu kontrol ediniz.'
+          : 'Video bilgileri alınamadı. Geçerli ve erişilebilir bir link giriniz.';
+      }
       return res.status(400).json({
-        error: isBotError(result)
-          ? 'YouTube bu videoyu indirmeye izin vermiyor. Farklı bir link veya platform deneyin.'
-          : 'Video bilgileri alınamadı. Geçerli ve erişilebilir bir link giriniz.',
+        error: errorMsg,
         detail: result.err
       });
     }
@@ -688,46 +1415,176 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
       const standardFormats = [
         { format_id: DEFAULT_VIDEO_FORMAT, label: bestLabel, ext: 'mp4' },
         ...allTiers,
-        { format_id: 'bestaudio/best', label: '🎵 Sadece Ses (MP3)', ext: 'mp3', audio_only: true },
+        { format_id: 'bestaudio/best', label: 'Sadece Ses (MP3 320k)', ext: 'mp3', audio_only: true },
       ];
 
-      // Extract thumbnail options
+      // Extract thumbnail options & A/B test variants
+      let ytId = null;
+      if (first?.id && /^[a-zA-Z0-9_-]{11}$/.test(first.id)) {
+        ytId = first.id;
+      } else if (url) {
+        const m = String(url).match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([a-zA-Z0-9_-]{11})/);
+        if (m) ytId = m[1];
+      }
+
       let thumbnailList = [];
+      let abVariants = [];
+
+      // 1. Temiz ve tekil çözünürlük listesi (Gereksiz mikro-boyutları ve Standart Kapak tekrarlarını engeller)
+      const has1080p = (Array.isArray(first?.thumbnails) && first.thumbnails.some(t => t && (t.width >= 1920 || t.height >= 1080) && !/[\/=]sb[\/=]|storyboard/i.test(t.url || ''))) ||
+                       Boolean(first?.thumbnail && /maxresdefault/i.test(first.thumbnail));
+      const has720p = has1080p ||
+                      (Array.isArray(first?.thumbnails) && first.thumbnails.some(t => t && (t.width >= 1280 || t.height >= 720) && !/[\/=]sb[\/=]|storyboard/i.test(t.url || ''))) ||
+                      Boolean(first?.thumbnail && /hq720/i.test(first.thumbnail));
+
       if (Array.isArray(first?.thumbnails) && first.thumbnails.length > 0) {
-        const sorted = [...first.thumbnails].filter(t => t && t.url).sort((a,b) => (b.height || b.width || 0) - (a.height || a.width || 0));
-        const seen = new Set();
-        sorted.forEach(t => {
-          const resKey = t.width && t.height ? `${t.width}x${t.height}` : t.url;
-          if (!seen.has(resKey)) {
-            seen.add(resKey);
-            let label = t.width && t.height ? `${t.width}x${t.height}` : 'Standart Kapak';
-            if (thumbnailList.length === 0) label += ' (En Yüksek)';
+        // Yalnızca anlamlı çözünürlükleri al (en az 480x360), böylece 120x90, 168x94 gibi minik parçalar elenir
+        let validSized = first.thumbnails
+          .filter(t => t && t.url && typeof t.width === 'number' && typeof t.height === 'number' && t.width >= 480 && t.height >= 360)
+          .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+
+        // Eğer hiç büyük çözünürlük bulunamadıysa en büyük mevcut boyutları al
+        if (validSized.length === 0) {
+          validSized = first.thumbnails
+            .filter(t => t && t.url && typeof t.width === 'number' && typeof t.height === 'number' && t.width > 0 && t.height > 0)
+            .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+        }
+
+        const seenResolutions = new Set();
+        validSized.forEach(t => {
+          const isStoryboard = /[\/=]sb[\/=]|storyboard|\/1\.jpg|\/2\.jpg|\/3\.jpg/i.test(t.url);
+          if (isStoryboard) return;
+
+          const resKey = `${t.width}x${t.height}`;
+          if (!seenResolutions.has(resKey)) {
+            seenResolutions.add(resKey);
+            let label = `${t.width}×${t.height}`;
+            if (t.height >= 1080 || t.width >= 1920) label += ' (En Yüksek)';
+            else if (t.height >= 720 || t.width >= 1280) label += ' (HD)';
+            else if (t.height >= 480) label += ' (SD)';
+            else label += ' (Standart)';
             thumbnailList.push({
               url: t.url,
-              resolution: t.width && t.height ? `${t.width}x${t.height}` : 'HD',
+              resolution: `${t.width}×${t.height}`,
               label: label,
-              width: t.width || null,
-              height: t.height || null
+              width: t.width,
+              height: t.height
             });
           }
         });
       }
 
-      if (thumbnailList.length === 0 && first?.thumbnail) {
+      // YouTube için doğrulanmış çözünürlük standart şablonları
+      if (ytId) {
+        const standardYt = [];
+        if (has1080p) {
+          standardYt.push({ url: `https://i.ytimg.com/vi/${ytId}/maxresdefault.jpg`, resolution: '1920×1080', label: '1920×1080 (En Yüksek)', width: 1920, height: 1080 });
+        }
+        if (has720p) {
+          standardYt.push({ url: `https://i.ytimg.com/vi/${ytId}/hq720.jpg`, resolution: '1280×720', label: '1280×720 (HD)', width: 1280, height: 720 });
+        }
+        standardYt.push(
+          { url: `https://i.ytimg.com/vi/${ytId}/sddefault.jpg`, resolution: '640×480', label: '640×480 (SD)', width: 640, height: 480 },
+          { url: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`, resolution: '480×360', label: '480×360 (Standart)', width: 480, height: 360 }
+        );
+
+        standardYt.forEach(st => {
+          if (!thumbnailList.some(ex => ex.resolution === st.resolution)) {
+            thumbnailList.push(st);
+          }
+        });
+        thumbnailList.sort((a,b) => (b.width * b.height) - (a.width * a.height));
+      }
+
+      // primaryThumbUrl: Doğrulanmış first.thumbnail veya en yüksek çözünürlük
+      const primaryThumbUrl = first?.thumbnail || thumbnailList[0]?.url || kickMeta?.thumbnail || null;
+      if (thumbnailList.length === 0 && primaryThumbUrl) {
         thumbnailList.push({
-          url: first.thumbnail,
+          url: primaryThumbUrl,
           label: 'En Yüksek Kalite',
-          resolution: 'HD'
+          resolution: 'HD',
+          width: 1920,
+          height: 1080
         });
       }
 
+      // 2. A/B Test ve Alternatif Kapak Varyantlarını Yapılandır
+      abVariants.push({
+        id: 'var_primary',
+        title: 'Ana Kapak (En Yüksek Kalite)',
+        label: 'Ana Kapak',
+        badge: 'Varsayılan',
+        url: primaryThumbUrl,
+        resolution: thumbnailList[0]?.resolution || 'Full HD',
+        isCurrent: true,
+        type: 'primary'
+      });
+
+      const seenVariantUrls = new Set([primaryThumbUrl]);
+      let abCounter = 1;
+      if (Array.isArray(first?.thumbnails)) {
+        first.thumbnails.forEach(t => {
+          if (!t || !t.url) return;
+          const isCustom = /custom_[0-9]+|i9\.ytimg\.com/i.test(t.url) || /custom/i.test(t.id || '');
+          if (isCustom && !seenVariantUrls.has(t.url)) {
+            seenVariantUrls.add(t.url);
+            abVariants.push({
+              id: `var_ab_${abCounter}`,
+              title: `A/B Test Kapak ${abCounter}`,
+              label: `A/B Kapak ${abCounter}`,
+              badge: 'A/B Test',
+              url: t.url,
+              resolution: t.width && t.height ? `${t.width}×${t.height}` : 'HD',
+              isCurrent: false,
+              type: 'ab_test'
+            });
+            abCounter++;
+          }
+        });
+      }
+
+      if (ytId) {
+        const frameTitles = [
+          'Alternatif Kare 1 (%25)',
+          'Alternatif Kare 2 (%50)',
+          'Alternatif Kare 3 (%75)'
+        ];
+        [1, 2, 3].forEach((fNum, idx) => {
+          const frameUrl = `https://i.ytimg.com/vi/${ytId}/hq${fNum}.jpg`;
+          if (!seenVariantUrls.has(frameUrl)) {
+            seenVariantUrls.add(frameUrl);
+            abVariants.push({
+              id: `var_frame_${fNum}`,
+              title: frameTitles[idx],
+              label: `Kare ${fNum}`,
+              badge: 'Kare Seçeneği',
+              url: frameUrl,
+              resolution: '480×360',
+              isCurrent: false,
+              type: 'frame'
+            });
+          }
+        });
+      }
+
+      let platformName = first?.extractor_key || 'Unknown';
+      if (/^kick/i.test(platformName) || isKick) platformName = 'Kick';
+
+      const finalTitle = kickMeta?.title || (first?.title && first.title !== 'master' ? first.title : null) || first?.playlist_title || 'Video';
+      const finalThumb = primaryThumbUrl;
+      const finalThumbnails = thumbnailList;
+      const finalDuration = kickMeta?.duration || first?.duration || null;
+      const finalUploader = kickMeta?.uploader || first?.uploader || first?.channel || null;
+
       res.json({
-        title:       first?.title || first?.playlist_title || 'Video',
-        thumbnail:   first?.thumbnail || null,
-        thumbnails:  thumbnailList,
-        duration:    first?.duration  || null,
-        uploader:    first?.uploader  || first?.channel || null,
-        platform:    first?.extractor_key || 'Unknown',
+        title:       finalTitle,
+        thumbnail:   finalThumb,
+        thumbnails:  finalThumbnails,
+        variants:    abVariants,
+        duration:    finalDuration,
+        uploader:    finalUploader,
+        platform:    platformName,
+        stream_url:  kickMeta?.streamUrl || null,
         is_playlist: isPlaylist,
         playlist_count: isPlaylist ? infos.length : null,
         formats:     standardFormats,
@@ -742,46 +1599,103 @@ app.post('/api/info', requireAuth, rateLimit(60 * 1000, 8, 'info'), (req, res) =
 app.get('/api/download-thumbnail-file', requireAuth, rateLimit(60 * 1000, 30, 'thumb'), (req, res) => {
   const imageUrl = req.query.url;
   const title = req.query.title || 'kapak-resmi';
-  if (!imageUrl) return res.status(400).send('URL gerekli');
-  if (!/^https?:\/\//i.test(imageUrl)) return res.status(400).send('Geçersiz URL');
+  if (!imageUrl || typeof imageUrl !== 'string') return res.status(400).send('URL gerekli');
+  if (/[\r\n\0\t\x00-\x1f]/.test(imageUrl) || !/^https?:\/\//i.test(imageUrl.trim())) return res.status(400).send('Geçersiz URL');
 
-  const httpModule = imageUrl.startsWith('https') ? require('https') : require('http');
+  const cleanBase = title.replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF\u0400-\u04FF-]/gi, '_').trim().slice(0, 60) || 'kapak-resmi';
 
-  const fetchImage = (url) => {
-    httpModule.get(url, (imgRes) => {
-      if (imgRes.statusCode >= 300 && imgRes.statusCode < 400 && imgRes.headers.location) {
-        return fetchImage(imgRes.headers.location);
+  const fetchWithRedirects = (currentUrl, redirectCount = 0) => {
+    if (redirectCount > 5) {
+      return res.status(500).send('Çok fazla yönlendirme');
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(currentUrl);
+    } catch {
+      return res.status(400).send('Geçersiz URL');
+    }
+
+    const mod = parsed.protocol === 'https:' ? require('https') : require('http');
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
       }
+    };
+
+    mod.get(parsed, options, (imgRes) => {
+      if (imgRes.statusCode >= 300 && imgRes.statusCode < 400 && imgRes.headers.location) {
+        const nextUrl = new URL(imgRes.headers.location, currentUrl).toString();
+        imgRes.resume();
+        return fetchWithRedirects(nextUrl, redirectCount + 1);
+      }
+
+      // YouTube maxresdefault.jpg 404 döndüyse hq720 veya hqdefault'a otomatik fallback yap
+      if (imgRes.statusCode === 404 && currentUrl.includes('maxresdefault.jpg')) {
+        imgRes.resume();
+        const fallbackUrl = currentUrl.replace('maxresdefault.jpg', 'hq720.jpg');
+        return fetchWithRedirects(fallbackUrl, redirectCount + 1);
+      }
+      if (imgRes.statusCode === 404 && currentUrl.includes('hq720.jpg')) {
+        imgRes.resume();
+        const fallbackUrl = currentUrl.replace('hq720.jpg', 'hqdefault.jpg');
+        return fetchWithRedirects(fallbackUrl, redirectCount + 1);
+      }
+
       if (imgRes.statusCode !== 200) {
+        imgRes.resume();
         return res.status(500).send('Resim indirilemedi');
       }
-      const cleanName = title.replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF\u0400-\u04FF-]/gi, '_').trim().slice(0, 60) || 'kapak-resmi';
-      res.setHeader('Content-Type', imgRes.headers['content-type'] || 'image/jpeg');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(cleanName)}.jpg"`);
+
+      const contentType = imgRes.headers['content-type'] || 'image/jpeg';
+      let ext = '.jpg';
+      if (contentType.includes('webp')) ext = '.webp';
+      else if (contentType.includes('png')) ext = '.png';
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(cleanBase)}${ext}"`);
       imgRes.pipe(res);
     }).on('error', () => {
-      res.status(500).send('İndirme hatası');
+      if (!res.headersSent) res.status(500).send('İndirme hatası');
     });
   };
 
-  fetchImage(imageUrl);
+  fetchWithRedirects(imageUrl.trim());
 });
 
 // ── API: Kuyruğa Ekle ──────────────────────────────────────
-app.post('/api/queue/add', requireAuth, rateLimit(60 * 1000, 10, 'queue-add'), (req, res) => {
+app.post('/api/queue/add', requireAuth, rateLimit(60 * 1000, 10, 'queue-add'), async (req, res) => {
   const { url, format_id, audio_only, title, thumbnail, platform,
-          trim_start, trim_end, download_thumbnail, is_playlist, custom_name, playback_speed } = req.body;
+          trim_start, trim_end, download_thumbnail, is_playlist, custom_name, playback_speed, stream_url } = req.body;
 
-  if (!url) return res.status(400).json({ error: 'URL gerekli' });
-  if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Geçersiz URL' });
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL gerekli' });
+  const trimmedUrl = url.trim();
+  if (/[\r\n\0\t\x00-\x1f]/.test(url) || !/^https?:\/\//i.test(trimmedUrl)) return res.status(400).json({ error: 'Geçersiz URL' });
 
   // Dosyalar her zaman sunucunun indirme klasörüne kaydedilir
   fs.mkdirSync(getDownloadDir(), { recursive: true });
 
+  const normalizedUrl = normalizeMediaUrl(trimmedUrl);
+  let resolvedStreamUrl = (typeof stream_url === 'string' && /^https?:\/\//i.test(stream_url.trim()))
+    ? stream_url.trim()
+    : null;
+
+  if (!resolvedStreamUrl && isKickUrl(normalizedUrl)) {
+    try {
+      const kickMeta = await resolveKickMedia(normalizedUrl);
+      if (kickMeta && kickMeta.streamUrl) {
+        resolvedStreamUrl = kickMeta.streamUrl;
+      }
+    } catch {}
+  }
+
   const job = {
     id: Date.now().toString() + Math.random().toString(36).slice(2,6),
     status: 'waiting',
-    url, format_id, audio_only: !!audio_only,
+    url: normalizedUrl,
+    stream_url: resolvedStreamUrl,
+    format_id, audio_only: !!audio_only,
     title: title || 'Video', thumbnail, platform,
     custom_name: sanitizeFileStem(custom_name) || '',
     playback_speed: normalizePlaybackSpeed(playback_speed),
@@ -846,6 +1760,7 @@ app.delete('/api/queue/:id', requireAuth, (req, res) => {
   const job = queue[idx];
   if (job._proc) { try { job._proc.kill('SIGKILL'); } catch {} }
   job.status = 'cancelled';
+  cleanupOrphanedJobFiles(job);
   queue.splice(idx, 1);
   processQueue();
   res.json({ ok: true });
@@ -854,10 +1769,25 @@ app.delete('/api/queue/:id', requireAuth, (req, res) => {
 // ── API: Dosya İndir (tarayıcıdan) ──────────────────────────
 app.get('/api/download/:id', requireAuth, rateLimit(60 * 1000, 30, 'download'), (req, res) => {
   const job = findJobOrHistory(req.params.id);
-  if (!job || !job.filename) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  if (!job) return res.status(404).json({ error: 'Dosya bulunamadı' });
 
-  const file = resolveFile(job.filename);
-  if (!file) return res.status(403).json({ error: 'Erişim reddedildi' });
+  let file = job.filename ? resolveFile(job.filename) : null;
+  if (!file) {
+    const dir = getDownloadDir();
+    const stem = sanitizeFileStem(job.custom_name || job.title);
+    if (stem) {
+      for (const ext of ['.mp4', '.mkv', '.webm', '.mov', '.mp3', '.m4a']) {
+        const candidate = path.join(dir, `${stem}${ext}`);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          file = candidate;
+          job.filename = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!file) return res.status(404).json({ error: 'Dosya bulunamadı' });
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     return res.status(404).json({ error: 'Dosya sunucuda bulunmuyor' });
   }
@@ -899,12 +1829,10 @@ app.patch('/api/download/:id/name', requireAuth, (req, res) => {
 
     job.filename = target;
     job.custom_name = stem;
-    if (job._proc === undefined && job.doneAt) {
-      const h = readHistory().map(x => x.id === job.id
-        ? { ...x, filename: target, custom_name: stem }
-        : x);
-      saveHistory(h);
-    }
+    const h = readHistory().map(x => x.id === job.id
+      ? { ...x, filename: target, custom_name: stem }
+      : x);
+    saveHistory(h);
     res.json({ ok: true, filename: target });
   } catch {
     res.status(500).json({ error: 'Dosya yeniden adlandırılamadı' });
@@ -914,10 +1842,25 @@ app.patch('/api/download/:id/name', requireAuth, (req, res) => {
 // ── API: Dosyayı Sunucudan Sil ──────────────────────────────
 app.delete('/api/download/:id', requireAuth, (req, res) => {
   const job = findJobOrHistory(req.params.id);
-  if (!job || !job.filename) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  if (!job) return res.status(404).json({ error: 'Dosya bulunamadı' });
 
-  const file = resolveFile(job.filename);
-  if (!file) return res.status(403).json({ error: 'Erişim reddedildi' });
+  let file = job.filename ? resolveFile(job.filename) : null;
+  if (!file) {
+    const dir = getDownloadDir();
+    const stem = sanitizeFileStem(job.custom_name || job.title);
+    if (stem) {
+      for (const ext of ['.mp4', '.mkv', '.webm', '.mov', '.mp3', '.m4a']) {
+        const candidate = path.join(dir, `${stem}${ext}`);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          file = candidate;
+          job.filename = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!file) return res.status(404).json({ error: 'Dosya bulunamadı' });
 
   try {
     if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -928,11 +1871,8 @@ app.delete('/api/download/:id', requireAuth, (req, res) => {
       if (f !== file && fs.existsSync(f)) fs.unlinkSync(f);
     }
     job.filename = null;
-    if (job._proc === undefined && job.doneAt) {
-      // history kaydını da güncelle
-      const h = readHistory().map(x => x.id === job.id ? { ...x, filename: null } : x);
-      saveHistory(h);
-    }
+    const h = readHistory().map(x => x.id === job.id ? { ...x, filename: null } : x);
+    saveHistory(h);
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Silinemedi' });
@@ -951,11 +1891,7 @@ app.delete('/api/history', requireAuth, (req, res) => {
 fs.mkdirSync(getDownloadDir(), { recursive: true });
 app.listen(PORT, HOST, () => {
   console.log(`\n✅ Video İndirici çalışıyor: http://localhost:${PORT}`);
-  console.log(`   Şifre: ${PASSWORD}`);
   console.log(`   Kayıt klasörü: ${getDownloadDir()}`);
-  console.log(`   yt-dlp: ${YTDLP_PATH} | ffmpeg: ${FFMPEG_PATH}\n`);
+  console.log(`   yt-dlp: ${YTDLP_PATH} | ffmpeg: ${FFMPEG_PATH} | ffprobe: ${FFPROBE_PATH}\n`);
   console.log(`   yt-dlp JS runtime: ${YTDLP_JS_RUNTIME || 'yok (yüksek kalite sınırlı olabilir)'}\n`);
-  if (!process.env.PASSWORD) {
-    console.log(`⚠️  PASSWORD ortam değişkeni tanımlanmadı. Yukarıdaki rastgele şifreyi kullanın.\n`);
-  }
 });
